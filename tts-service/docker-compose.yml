@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  tts-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./models:/app/models
+      - ./cache:/app/cache
+    environment:
+      - TTS_MODELS_DIR=/app/models
+      - TTS_CACHE_DIR=/app/cache
+      - TTS_USE_CUDA=true
+      - PORT=8082
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s 

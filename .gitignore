@@ -51,3 +51,6 @@ ENV/
 
 # Uploaded content
 uploaded_videos/
+
+# TTS models
+tts-service/models/

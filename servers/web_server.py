@@ -438,11 +438,22 @@ class Webserver(threading.Thread):
     def tts_route(self):
         data = request.json
         text = data.get('text', '').strip()
+        tts_service = data.get('tts_service', 'local')  # Default to local TTS
         api_key = data.get('api_key', None)
+
         if not text:
             return jsonify({"error": "No text provided"}), 400
+
+        if tts_service == 'elevenlabs':
+            return self._handle_elevenlabs_tts(text, api_key)
+        else:  # local TTS service
+            return self._handle_local_tts(text, data)
+
+    def _handle_elevenlabs_tts(self, text, api_key):
+        """Handle ElevenLabs TTS requests"""
         if not api_key:
-            return jsonify({"error": "No API key provided"}), 400
+            return jsonify({"error": "No API key provided for ElevenLabs"}), 400
+
         voice_id = "TX3LPaxmHKxFdv7VOQHJ"
         model_id = "eleven_multilingual_v2"
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
@@ -465,6 +476,44 @@ class Webserver(threading.Thread):
             audio_base64 = base64.b64encode(r.content).decode('utf-8')
             return jsonify({"tts_base64": audio_base64})
         except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def _handle_local_tts(self, text, data):
+        """Handle local TTS service requests"""
+        try:
+            tts_host = os.getenv('TTS_HOST', 'localhost')
+            tts_port = os.getenv('TTS_PORT', '8082')
+            tts_url = f"http://{tts_host}:{tts_port}/api/tts"
+
+            # Get TTS model from request, default to a good quality model
+            tts_model = data.get('tts_model', 'tts_models/en/ljspeech/vits')
+
+            payload = {
+                "text": text,
+                "model_name": tts_model,
+                "speaker_name": data.get('speaker_name'),
+                "language": data.get('language')
+            }
+
+            # Try to connect to local TTS service
+            r = requests.post(tts_url, json=payload, params={"format": "json"}, timeout=30)
+
+            if r.status_code == 200:
+                response_data = r.json()
+                # The local TTS service returns base64 audio data
+                return jsonify({"tts_base64": response_data.get('audio')})
+            else:
+                self._logger.error(f"Local TTS service error {r.status_code}: {r.text[:500]}")
+                return jsonify({"error": f"Local TTS service error {r.status_code}: {r.text[:500]}"}), 400
+
+        except requests.exceptions.ConnectionError:
+            self._logger.error("Could not connect to local TTS service")
+            return jsonify({"error": "Local TTS service is not available. Please check if it's running."}), 503
+        except requests.exceptions.Timeout:
+            self._logger.error("Local TTS service request timed out")
+            return jsonify({"error": "TTS request timed out"}), 504
+        except Exception as e:
+            self._logger.error(f"Local TTS service error: {e}")
             return jsonify({"error": str(e)}), 500
 
     def send_message(self, payload):

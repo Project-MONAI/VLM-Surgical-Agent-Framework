@@ -216,11 +216,19 @@ Common issues and solutions:
    * Check that the Whisper server is running
    * Adjust microphone settings in your browser
 
-## Text-to-Speech (Optional)
+## Text-to-Speech (TTS)
 
-If you want to enable TTS with ElevenLabs (or implement your own local TTS server):
-    * Follow the instructions in the index.html or your code snippet that calls a TTS route or API.
-    * Provide your TTS API key if needed.
+The framework supports both local and cloud-based TTS options:
+
+### Local TTS Service (Recommended)
+**Benefits**: Private, GPU-accelerated, Offline-capable
+
+The TTS service uses a high-quality English VITS model ([Conditional Variational Autoencoder with Adversarial Learning for End-to-End Text-to-Speech](https://arxiv.org/pdf/2106.06103)) (`tts_models/en/ljspeech/vits`) that automatically downloads on first use. The model is stored persistently in `./tts-service/models/` and will be available across container restarts.
+
+### ElevenLabs TTS (Alternative)
+For cloud-based premium quality TTS:
+- Configure your ElevenLabs API key in the web interface
+- No local storage or GPU resources required
 
 ## File Structure
 

@@ -1,10 +1,11 @@
 # Host the Surgical Agent Framework in Docker Containers
 
-This repository provides Docker containers for running the Surgical Agent Framework. The framework is split into three main components:
+This repository provides Docker containers for running the Surgical Agent Framework. The framework is split into four main components:
 
 1. **vLLM Server**: Hosts the large language model for agent interactions
 2. **Whisper Server**: Provides real-time speech-to-text capabilities
 3. **UI Server**: Serves the web interface and coordinates communication
+4. **TTS Server**: Provides text-to-speech voice synthesis capabilities
 
 Each component runs in its own container for better isolation and scalability. The containers communicate over the host network for simplicity in development.
 
@@ -46,6 +47,7 @@ This will automatically:
 - `vllm` - vLLM server only
 - `whisper` - Whisper server only
 - `ui` - UI server only
+- `tts` - TTS server only
 - (no component) - All components (default)
 
 ### Examples
@@ -101,6 +103,7 @@ Once running, the following services will be available:
 - **vLLM Server**: http://localhost:8000 (OpenAI API compatible)
 - **Whisper Server**: http://localhost:8765 (Speech-to-Text)
 - **UI Server**: http://localhost:8050 (Web Interface)
+- **TTS Server**: http://localhost:8082 (Text-to-Speech)
 
 ## Manual Docker Commands (Advanced)
 
@@ -168,6 +171,114 @@ docker run -it --rm --net host vlm-surgical-agents:ui
 ```
 
 You can now access the UI at http://localhost:8050
+
+### TTS (Text-to-Speech)
+
+The Surgical Agent Framework supports **two Text-to-Speech (TTS) options**:
+
+1. **Local TTS Service** (Default) - runs on your hardware
+2. **ElevenLabs TTS** - Cloud-based, requires API key
+
+#### Quick TTS Setup
+
+The TTS service is included when you run all services:
+
+```bash
+# Build and run all services (including local TTS)
+./run-surgical-agents.sh
+
+# Or run local TTS service only
+./run-surgical-agents.sh run tts
+```
+
+#### Test the local TTS Integration
+
+```bash
+# Run the test script to verify everything is working
+python3 ../test-tts.py
+```
+
+#### Using TTS in the Web Interface
+
+1. Open http://localhost:8050 in your browser
+2. In the "Text-to-Speech" panel:
+   - ✅ Enable voice responses
+   - 🎯 Select "Local TTS" (default)
+3. Start a conversation and enjoy voice responses!
+
+#### TTS Service Management
+
+```bash
+# Start TTS service
+./run-surgical-agents.sh run tts
+
+# Stop TTS service
+./run-surgical-agents.sh stop tts
+
+# View TTS logs
+./run-surgical-agents.sh logs tts
+
+# Check service status
+./run-surgical-agents.sh status
+```
+
+#### Model Storage
+
+The TTS model is stored persistently in:
+- **Host Directory**: `./tts-service/models/`
+- **Container Path**: `/root/.local/share/tts` (symlinked to volume)
+- **Auto-download**: The model (`tts_models/en/ljspeech/vits`) downloads automatically on first use
+
+#### TTS Service Endpoints
+
+When running, the TTS service is available at:
+- **Health Check:** http://localhost:8082/api/health
+- **API Documentation:** http://localhost:8082/docs
+- **Models List:** http://localhost:8082/api/models
+
+#### Manual Docker Commands
+
+- Build
+```bash
+docker build -t vlm-surgical-agents:tts -f tts-service/Dockerfile tts-service
+```
+
+- Run (models will be automatically downloaded on first use)
+```bash
+docker run -it --rm --gpus all --net host \
+  -v <path-to-repo>/tts-service/models:/app/models \
+  -v <path-to-repo>/tts-service/cache:/app/cache \
+  -e TTS_MODELS_DIR=/app/models \
+  -e TTS_CACHE_DIR=/app/cache \
+  -e TTS_USE_CUDA=true \
+  -e PORT=8082 \
+  vlm-surgical-agents:tts
+```
+
+#### TTS Troubleshooting
+
+**TTS Service Won't Start:**
+```bash
+# Check if port 8082 is in use
+sudo netstat -tlnp | grep 8082
+
+# Check Docker logs
+./run-surgical-agents.sh logs tts
+```
+
+**No Audio Output:**
+```bash
+# Test the integration
+python3 ../test-tts.py
+
+# Check browser audio permissions
+```
+
+**GPU Not Detected:**
+```bash
+# Check NVIDIA Docker runtime
+docker run --rm --gpus all nvidia/cuda:11.8-base-ubuntu22.04 nvidia-smi
+```
 
 ## Troubleshooting
 

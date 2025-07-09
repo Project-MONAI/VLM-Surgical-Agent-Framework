@@ -7,15 +7,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-    
+
     <!-- Tailwind CSS -->
     <link rel="stylesheet" href="/static/styles.compiled.css">
-    
+
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    
+
     <!-- Font Awesome Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
@@ -25,7 +25,7 @@
     <!-- Our scripts -->
     <script src="/static/websocket.js"></script>
     <script src="/static/audio.js"></script>
-    
+
 </head>
 <body class="bg-dark-900 font-sans text-white min-h-screen overflow-auto">
   <nav class="bg-primary-900 shadow-md">
@@ -53,7 +53,7 @@
           <div id="video-controls-collapse" class="panel-content">
             <form id="video-upload-form" enctype="multipart/form-data" class="mb-2" onsubmit="event.preventDefault(); uploadVideo();">
               <label class="block mb-2 text-sm font-medium text-gray-300">Upload New Video:</label>
-              
+
               <div class="flex flex-col sm:flex-row gap-2 mb-3">
                 <div class="flex-grow">
                   <div class="relative border border-primary-700 bg-dark-700 rounded-lg px-3 py-2 hover:border-primary-500 transition-colors focus-within:ring-2 focus-within:ring-primary-500">
@@ -69,7 +69,7 @@
                   <i class="fas fa-upload mr-2"></i> Upload
                 </button>
               </div>
-              
+
               <button type="button" class="btn w-full flex items-center justify-center bg-gradient-to-r from-primary-400 to-primary-500 hover:from-primary-300 hover:to-primary-400 text-primary-900 font-medium hover:text-primary-950 transform hover:-translate-y-0.5 transition-all duration-200 shadow-md" id="show-videos-btn" data-modal-target="videoSelectModal">
                 <i class="fas fa-photo-video mr-2"></i> Browse Uploaded Videos
               </button>
@@ -77,7 +77,7 @@
           </div>
         </div>
       </div>
-      
+
       <!-- Instructions Panel -->
       <div class="w-full lg:w-1/3 px-3 mb-3 lg:mb-0">
         <div class="bg-dark-800 rounded-lg p-3 shadow-lg border border-dark-700 panel-container">
@@ -99,7 +99,7 @@
                 </div>
               </div>
             </div>
-            
+
             <div class="rounded-lg bg-dark-900 p-3 border border-primary-900 mb-2">
               <div class="flex items-start">
                 <div class="w-6 h-6 rounded-full bg-primary-700 flex items-center justify-center text-white text-xs flex-shrink-0 mt-0.5 mr-2">2</div>
@@ -109,7 +109,7 @@
                 </div>
               </div>
             </div>
-            
+
             <div class="rounded-lg bg-dark-900 p-3 border border-primary-900">
               <div class="flex items-start">
                 <div class="w-6 h-6 rounded-full bg-primary-700 flex items-center justify-center text-white text-xs flex-shrink-0 mt-0.5 mr-2">3</div>
@@ -122,7 +122,7 @@
           </div>
         </div>
       </div>
-      
+
       <!-- TTS Controls Panel -->
       <div class="w-full lg:w-1/3 px-3 mb-3 lg:mb-0">
         <div id="ttsControls" class="bg-dark-800 rounded-lg p-3 shadow-lg border border-dark-700 panel-container">
@@ -149,8 +149,31 @@
                 <span class="text-sm font-medium ml-1">Enable voice responses</span>
               </div>
             </div>
-            
-            <div class="mb-2">
+
+            <div class="mb-3">
+              <label for="ttsService" class="block mb-2 text-sm font-medium text-gray-300">TTS Service:</label>
+              <select id="ttsService" class="w-full p-2 bg-dark-700 border border-primary-700 focus:border-primary-500 focus:ring-2 focus:ring-primary-500 rounded-lg text-sm text-white transition-colors">
+                <option value="local">Local TTS</option>
+                <option value="elevenlabs">ElevenLabs (Requires API Key)</option>
+              </select>
+            </div>
+
+            <div id="localTtsOptions" class="mb-3">
+              <label for="ttsModel" class="block mb-2 text-sm font-medium text-gray-300">Voice Model:</label>
+              <select id="ttsModel" class="w-full p-2 bg-dark-700 border border-primary-700 focus:border-primary-500 focus:ring-2 focus:ring-primary-500 rounded-lg text-sm text-white transition-colors">
+                <option value="tts_models/en/ljspeech/vits">English (LJSpeech VITS)</option>
+              </select>
+
+              <!-- WebSocket Connection Status -->
+              <div class="mt-2 flex items-center text-xs">
+                <div id="ttsConnectionStatus" class="flex items-center">
+                  <div class="w-2 h-2 rounded-full bg-gray-500 mr-2" id="ttsStatusDot"></div>
+                  <span id="ttsStatusText" class="text-gray-400">WebSocket Disconnected</span>
+                </div>
+              </div>
+            </div>
+
+            <div id="elevenlabsOptions" class="mb-3" style="display: none;">
               <label for="ttsApiKey" class="block mb-2 text-sm font-medium text-gray-300">ElevenLabs API Key:</label>
               <div class="relative">
                 <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -161,18 +184,18 @@
               </div>
               <p class="mt-1 text-xs text-gray-400">Default key is available, or enter your own ElevenLabs key.</p>
             </div>
-            
+
             <div class="rounded-lg bg-dark-900 p-3 border border-primary-900 mt-4">
               <div class="flex items-center text-xs text-gray-300">
                 <i class="fas fa-info-circle text-primary-400 mr-2"></i>
-                <p class="m-0">Voice output will read AI responses aloud using the ElevenLabs Text-to-Speech API.</p>
+                <p class="m-0" id="ttsDescription">Voice output will read AI responses aloud using the Text-to-Speech API.</p>
               </div>
             </div>
           </div>
         </div>
       </div>
     </div>
-    
+
     <!-- Middle row with video and chat/tabs side by side -->
     <div class="flex flex-wrap -mx-3">
       <!-- Video Panel - Left Column -->
@@ -210,7 +233,7 @@
           </div>
         </div>
       </div>
-      
+
       <!-- Chat/Annotations/Notes/Summary Tabs - Right Column -->
       <div class="w-full lg:w-1/2 px-3 mb-3">
         <!-- Tabs for chat, annotations, and notes -->
@@ -237,7 +260,7 @@
               </button>
             </li>
           </ul>
-          
+
           <div class="tab-content">
             <!-- Chat Tab Content -->
             <div class="tab-pane active" id="chat-tab-content" role="tabpanel" style="display: block;">
@@ -252,7 +275,7 @@
                     <i class="fas fa-trash-alt mr-1.5"></i> Clear
                   </button>
                 </div>
-                
+
                 <!-- Chat messages area -->
                 <div id="chat-history-container" class="scroll-smooth flex-1 overflow-auto px-3 py-3">
                   <!-- Welcome message -->
@@ -273,7 +296,7 @@
                   </div>
                   </div>
                 </div>
-                
+
                 <!-- Chat input area -->
                 <div class="p-3 bg-dark-800 border-t border-dark-700">
                   <div class="relative">
@@ -287,12 +310,12 @@
                           <i class="fas fa-paper-plane"></i>
                         </button>
                       </div>
-                      
+
                       <button class="btn ml-2 h-[44px] px-3 flex-shrink-0 rounded-lg shadow-sm flex items-center justify-center bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-500 hover:to-primary-600 text-white transform hover:scale-105 transition-all duration-200 opacity-50 cursor-not-allowed" id="mic-btn" onclick="toggleMic()" disabled>
                         <i class="fas fa-microphone mr-1.5"></i> <span>Start Mic</span>
                       </button>
                     </div>
-                    
+
                     <div class="flex items-center text-[10px] text-gray-500 pl-1">
                       <i class="fas fa-info-circle mr-1"></i>
                       <span>Press Enter to send, Shift+Enter for new line</span>
@@ -301,7 +324,7 @@
                 </div>
               </div>
             </div>
-            
+
             <!-- Annotations Tab Content -->
             <div class="tab-pane" id="annotations-tab-content" role="tabpanel" style="display: none;">
               <div class="flex flex-col" style="height: 65vh; max-height: 600px;">
@@ -312,7 +335,7 @@
                     <h5 class="font-semibold m-0">Annotations</h5>
                   </div>
                 </div>
-                
+
                 <div id="annotations-container" class="flex-1 overflow-auto p-3 bg-dark-900">
                   <div class="annotation-content">
                     <div class="text-center text-gray-400 p-5">
@@ -323,7 +346,7 @@
                 </div>
               </div>
             </div>
-            
+
             <!-- Notes Tab Content -->
             <div class="tab-pane" id="notes-tab-content" role="tabpanel" style="display: none;">
               <div class="flex flex-col" style="height: 65vh; max-height: 600px;">
@@ -339,7 +362,7 @@
                     </button>
                   </div>
                 </div>
-                
+
                 <div id="notes-container" class="flex-1 overflow-auto p-3 bg-dark-900">
                   <div class="text-center text-gray-400 p-5">
                     <i class="fas fa-sticky-note fa-3x mb-3"></i>
@@ -348,7 +371,7 @@
                 </div>
               </div>
             </div>
-            
+
             <!-- Summary Tab Content -->
             <div class="tab-pane" id="summary-tab-content" role="tabpanel" style="display: none;">
               <div class="flex flex-col" style="height: 65vh; max-height: 600px;">
@@ -364,7 +387,7 @@
                     </button>
                   </div>
                 </div>
-                
+
                 <div id="summary-container" class="flex-1 overflow-auto p-3 bg-dark-900">
                   <div class="text-center text-gray-400 p-5">
                     <i class="fas fa-file-medical-alt fa-3x mb-3"></i>
@@ -377,7 +400,7 @@
         </div>
       </div>
     </div>
-    
+
     <!-- Video selection modal -->
     <div class="modal fade hidden fixed inset-0 z-50 overflow-auto flex items-center justify-center" id="videoSelectModal" tabindex="-1">
       <div class="fixed inset-0 bg-black bg-opacity-75 transition-opacity"></div>
@@ -482,7 +505,7 @@
       </div>
     </div>
   </div>
-  
+
   <!-- Image Viewer Modal -->
   <div class="modal fade hidden fixed inset-0 z-50 overflow-auto flex items-center justify-center" id="imageViewerModal" tabindex="-1">
     <div class="fixed inset-0 bg-black bg-opacity-75 transition-opacity"></div>
@@ -517,7 +540,7 @@
       </div>
     </div>
   </div>
-  
+
   <!-- Audio Settings Modal -->
   <div class="modal fade hidden fixed inset-0 z-50 overflow-auto flex items-center justify-center" id="audioDialog" tabindex="-1">
     <div class="fixed inset-0 bg-black bg-opacity-75 transition-opacity"></div>
