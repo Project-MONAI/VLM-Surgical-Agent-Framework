@@ -230,6 +230,35 @@
                 </span>
               </div>
             </div>
+
+            <!-- Captured Frame Display -->
+            <div class="p-2 bg-dark-900 border-t border-dark-700">
+              <div class="flex items-center justify-between mb-2">
+                <h6 class="font-medium text-white text-sm flex items-center m-0">
+                  <i class="fas fa-camera text-primary-400 mr-2"></i> Current Frame for AI Analysis
+                </h6>
+                <div class="flex items-center space-x-2">
+                  <span id="frame-status" class="text-xs text-gray-400">No frame captured</span>
+                  <div id="frame-timestamp" class="text-xs text-gray-500"></div>
+                </div>
+              </div>
+              <div id="captured-frame-container" class="relative">
+                <div id="captured-frame-placeholder" class="w-full h-24 bg-dark-700 border border-dark-600 rounded-lg flex items-center justify-center text-gray-400 text-sm">
+                  <div class="text-center">
+                    <i class="fas fa-image text-2xl mb-2 text-gray-500"></i>
+                    <div>No frame captured yet</div>
+                    <div class="text-xs text-gray-500 mt-1">Frame will appear here when captured</div>
+                  </div>
+                </div>
+                <img id="captured-frame-image" class="w-full h-24 object-contain bg-dark-700 border border-dark-600 rounded-lg hidden" alt="Captured frame">
+                <div id="frame-sending-overlay" class="absolute inset-0 bg-primary-600 bg-opacity-20 rounded-lg items-center justify-center hidden">
+                  <div class="text-center text-white">
+                    <i class="fas fa-paper-plane text-lg mb-1"></i>
+                    <div class="text-xs">Sending for AI Analysis...</div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

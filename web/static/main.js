@@ -1178,6 +1178,11 @@ function completeMessageSend(message, frameData) {
 
   // Send payload to server
   if (typeof sendJSON === 'function') {
+    // Show sending status if we have frame data
+    if (frameData) {
+      showFrameSendingStatus();
+    }
+
     sendJSON(payload);
     console.log("Message sent to backend" + (frameData ? " with frame data" : " WITHOUT frame data"));
   } else {
@@ -1563,12 +1568,16 @@ function captureAndStoreFrame() {
     if (frameData) {
       // Store the captured frame in sessionStorage
       sessionStorage.setItem('lastCapturedFrame', frameData);
+      // Update the display with manual capture status
+      updateCapturedFrameDisplay(frameData, 'Manually captured', 'manual');
       showToast('Frame captured successfully!', 'success');
     } else {
+      updateFrameStatus('Failed to capture frame', 'text-xs text-red-400');
       showToast('Failed to capture frame - video not playing', 'error');
     }
   } catch (err) {
     console.error('Error capturing frame:', err);
+    updateFrameStatus('Capture error: ' + err.message, 'text-xs text-red-400');
     showToast('Error capturing frame: ' + err.message, 'error');
   }
 }
@@ -1621,6 +1630,9 @@ function startAutoFrameCapture() {
     sessionStorage.setItem('lastCapturedFrame', initialFrame);
     console.log("Initial frame captured and stored successfully");
 
+    // Update the display
+    updateCapturedFrameDisplay(initialFrame, 'Initial frame captured', 'auto');
+
     // Send to server for annotation
     if (typeof sendJSON === 'function') {
       sendJSON({
@@ -1658,6 +1670,7 @@ function startAutoFrameCapture() {
       // Try to use any previously stored frame for annotation
       const lastFrame = sessionStorage.getItem('lastCapturedFrame');
       if (lastFrame && typeof sendJSON === 'function') {
+        updateCapturedFrameDisplay(lastFrame, 'Auto-capture failed - using previous', 'fallback');
         sendJSON({
           auto_frame: true,
           frame_data: lastFrame
@@ -1713,11 +1726,14 @@ function captureVideoFrame() {
     const lastFrame = sessionStorage.getItem('lastCapturedFrame');
     if (lastFrame) {
       console.log("Using previous frame since video isn't ready for capture");
+      updateCapturedFrameDisplay(lastFrame, 'Video not ready - using previous', 'fallback');
       return lastFrame;
     }
 
     // Create a placeholder frame if we can't get a real one
-    return createPlaceholderFrame();
+    const placeholder = createPlaceholderFrame();
+    updateCapturedFrameDisplay(placeholder, 'Video not ready - using placeholder', 'placeholder');
+    return placeholder;
   }
 
   try {
@@ -1728,7 +1744,9 @@ function captureVideoFrame() {
     if (videoElement.videoWidth === 0 || videoElement.videoHeight === 0) {
       console.warn('Video dimensions are not available yet');
       // Return a placeholder frame instead of trying with default dimensions
-      return createPlaceholderFrame();
+      const placeholder = createPlaceholderFrame();
+      updateCapturedFrameDisplay(placeholder, 'No video dimensions - using placeholder', 'placeholder');
+      return placeholder;
     } else {
       canvas.width = videoElement.videoWidth;
       canvas.height = videoElement.videoHeight;
@@ -1747,11 +1765,14 @@ function captureVideoFrame() {
       const lastFrame = sessionStorage.getItem('lastCapturedFrame');
       if (lastFrame) {
         console.log("Using last captured frame after drawing error");
+        updateCapturedFrameDisplay(lastFrame, 'Drawing error - using previous', 'fallback');
         return lastFrame;
       }
 
       // Fallback to placeholder
-      return createPlaceholderFrame();
+      const placeholder = createPlaceholderFrame();
+      updateCapturedFrameDisplay(placeholder, 'Drawing error - using placeholder', 'placeholder');
+      return placeholder;
     }
 
     // Convert to base64 data URL
@@ -1765,14 +1786,20 @@ function captureVideoFrame() {
       const lastFrame = sessionStorage.getItem('lastCapturedFrame');
       if (lastFrame) {
         console.log("Invalid data URL - using previous frame instead");
+        updateCapturedFrameDisplay(lastFrame, 'Invalid data - using previous', 'fallback');
         return lastFrame;
       }
 
-      return createPlaceholderFrame();
+      const placeholder = createPlaceholderFrame();
+      updateCapturedFrameDisplay(placeholder, 'Invalid data - using placeholder', 'placeholder');
+      return placeholder;
     }
 
     // Store successfully captured frame in session storage for fallback
     sessionStorage.setItem('lastCapturedFrame', dataURL);
+
+    // Update the captured frame display in the UI
+    updateCapturedFrameDisplay(dataURL, 'Frame captured', 'video');
 
     console.log('Frame captured successfully');
     return dataURL;
@@ -1783,11 +1810,14 @@ function captureVideoFrame() {
     const lastFrame = sessionStorage.getItem('lastCapturedFrame');
     if (lastFrame) {
       console.log("Using previously captured frame after error");
+      updateCapturedFrameDisplay(lastFrame, 'Using previous frame', 'fallback');
       return lastFrame;
     }
 
     // If nothing else works, create a placeholder
-    return createPlaceholderFrame();
+    const placeholder = createPlaceholderFrame();
+    updateCapturedFrameDisplay(placeholder, 'Placeholder frame', 'placeholder');
+    return placeholder;
   }
 }
 
@@ -3600,5 +3630,84 @@ function getWebSocketStateText(state) {
     case WebSocket.CLOSING: return 'CLOSING (2)';
     case WebSocket.CLOSED: return 'CLOSED (3)';
     default: return `UNKNOWN (${state})`;
+  }
+}
+
+// ============================================================================
+// CAPTURED FRAME DISPLAY FUNCTIONS
+// ============================================================================
+
+// Update the captured frame display in the UI
+function updateCapturedFrameDisplay(frameData, status = 'Captured', source = 'manual') {
+  const frameImage = document.getElementById('captured-frame-image');
+  const framePlaceholder = document.getElementById('captured-frame-placeholder');
+  const frameStatus = document.getElementById('frame-status');
+  const frameTimestamp = document.getElementById('frame-timestamp');
+
+  if (!frameImage || !framePlaceholder || !frameStatus || !frameTimestamp) {
+    console.warn('Captured frame display elements not found');
+    return;
+  }
+
+  if (frameData) {
+    // Show the captured frame
+    frameImage.src = frameData;
+    frameImage.classList.remove('hidden');
+    framePlaceholder.classList.add('hidden');
+
+    // Update status and timestamp
+    frameStatus.textContent = status;
+    frameStatus.className = 'text-xs text-green-400';
+
+    const now = new Date();
+    const timeString = now.toLocaleTimeString();
+    frameTimestamp.textContent = `${timeString} (${source})`;
+
+    console.log(`Frame display updated: ${status} from ${source}`);
+  } else {
+    // Show placeholder
+    frameImage.classList.add('hidden');
+    framePlaceholder.classList.remove('hidden');
+
+    frameStatus.textContent = 'No frame available';
+    frameStatus.className = 'text-xs text-gray-400';
+    frameTimestamp.textContent = '';
+  }
+}
+
+// Show the sending overlay when frame is being sent to vLLM
+function showFrameSendingStatus() {
+  const overlay = document.getElementById('frame-sending-overlay');
+  const frameStatus = document.getElementById('frame-status');
+
+  if (overlay) {
+    overlay.classList.remove('hidden');
+    overlay.classList.add('flex');
+  }
+
+  if (frameStatus) {
+    frameStatus.textContent = 'Sending for AI Analysis...';
+    frameStatus.className = 'text-xs text-primary-400';
+  }
+
+  // Hide the overlay after a short time
+  setTimeout(() => {
+    if (overlay) {
+      overlay.classList.add('hidden');
+      overlay.classList.remove('flex');
+    }
+    if (frameStatus) {
+      frameStatus.textContent = 'Sent for AI Analysis';
+      frameStatus.className = 'text-xs text-green-400';
+    }
+  }, 1500);
+}
+
+// Update frame status without changing the image
+function updateFrameStatus(status, className = 'text-xs text-gray-400') {
+  const frameStatus = document.getElementById('frame-status');
+  if (frameStatus) {
+    frameStatus.textContent = status;
+    frameStatus.className = className;
   }
 }
