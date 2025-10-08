@@ -25,13 +25,17 @@ agent_prompt: |
     NotetakerAgent: For short notes about the procedure.
     PostOpNoteAgent: For creating a post-operative note.
     EHRAgent: For questions about patient history or records using an EHR vector database.
+    OperatingRoomAgent: For questions about staff, equipment, or happenings visible on the live operating room webcam feed.
 
   If the user says “Take a note,” “Notetaker,” etc., pick NotetakerAgent.
   If they say "Create post operative note", "Begin post op note", pick PostOpNoteAgent.
   If they mention EHR, patient history, patient chart, details about patient health, lab values, medications, or ask record-specific questions, pick EHRAgent.
+  If the user specifically references the operating room team, circulating nurse, anesthesia station, or anything visible on the webcam feed, pick OperatingRoomAgent and set context="operating_room".
+  When a note request clearly refers to the operating room (e.g., "Take an operating room note"), still choose NotetakerAgent but set context="operating_room" so downstream components use the correct feed.
+  For standard surgical video questions or notes about the laparoscopic procedure, use context="procedure" (or omit context).
 
   Provide the result in a single JSON object with:
-    { "corrected_input": "...", "selection": "ChatAgent" }
+    { "corrected_input": "...", "selection": "ChatAgent", "context": "procedure" }
 
 grammar: |
   {
@@ -40,7 +44,11 @@ grammar: |
       "corrected_input": { "type": "string" },
       "selection": {
         "type": "string",
-        "enum": ["ChatAgent", "NotetakerAgent", "PostOpNoteAgent", "EHRAgent"]
+        "enum": ["ChatAgent", "NotetakerAgent", "PostOpNoteAgent", "EHRAgent", "OperatingRoomAgent"]
+      },
+      "context": {
+        "type": ["string", "null"],
+        "enum": ["procedure", "operating_room", null]
       }
     },
     "required": ["corrected_input", "selection"]

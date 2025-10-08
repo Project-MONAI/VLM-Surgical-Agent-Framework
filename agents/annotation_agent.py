@@ -35,6 +35,77 @@ class AnnotationAgent(Agent):
         self.frame_queue = frame_queue  
         self.time_step = self.agent_settings.get("time_step_seconds", 10)
 
+        # Allow per-agent configuration of normalization behaviour
+        allowed_tools = self.agent_settings.get("allowed_tools")
+        if isinstance(allowed_tools, list):
+            self.tools_enum = {str(item).strip().lower() for item in allowed_tools if str(item).strip()}
+        elif isinstance(allowed_tools, str) and allowed_tools.strip().lower() == "any":
+            self.tools_enum = None
+        else:
+            self.tools_enum = {
+                "scissors", "hook", "clipper", "grasper", "bipolar", "irrigator", "none"
+            }
+
+        allowed_anatomy = self.agent_settings.get("allowed_anatomy")
+        if isinstance(allowed_anatomy, list):
+            self.anatomy_enum = {str(item).strip().lower().replace(" ", "_") for item in allowed_anatomy if str(item).strip()}
+        elif isinstance(allowed_anatomy, str) and allowed_anatomy.strip().lower() == "any":
+            self.anatomy_enum = None
+        else:
+            self.anatomy_enum = {
+                "gallbladder", "cystic_duct", "cystic_artery", "omentum", "liver",
+                "blood_vessel", "abdominal_wall", "peritoneum", "gut", "specimen_bag", "none"
+            }
+
+        allowed_phases = self.agent_settings.get("allowed_phases")
+        if isinstance(allowed_phases, list):
+            self.phase_enum = {str(item).strip().lower().replace(" ", "_") for item in allowed_phases if str(item).strip()}
+        elif isinstance(allowed_phases, str) and allowed_phases.strip().lower() == "any":
+            self.phase_enum = None
+        else:
+            self.phase_enum = {
+                "preparation",
+                "calots_triangle_dissection",
+                "clipping_and_cutting",
+                "gallbladder_dissection",
+                "gallbladder_packaging",
+                "cleaning_and_coagulation",
+                "gallbladder_extraction",
+            }
+
+        def _coerce_list(value, fallback):
+            if value is None:
+                return list(fallback)
+            if isinstance(value, list):
+                return value
+            return [value]
+
+        self.default_tools_value = _coerce_list(
+            self.agent_settings.get("default_tools_value", ["none"] if self.tools_enum is not None else []),
+            ["none"] if self.tools_enum is not None else []
+        )
+        self.default_anatomy_value = _coerce_list(
+            self.agent_settings.get("default_anatomy_value", ["none"] if self.anatomy_enum is not None else []),
+            ["none"] if self.anatomy_enum is not None else []
+        )
+
+        self.default_phase = str(self.agent_settings.get("default_phase", "preparation")).strip()
+        if not self.default_phase:
+            self.default_phase = "preparation"
+
+        self.scene_fallback_description = self.agent_settings.get(
+            "default_description",
+            "Scene reviewed; limited identifiable details"
+        )
+
+        self.annotation_source = self.agent_settings.get("annotation_source")
+
+        self._tool_synonym_map = {
+            "forceps": "grasper",
+            "grasper": "grasper",
+            "clip-applier": "clipper",
+        }
+
         if procedure_start_str is None:
             procedure_start_str = time.strftime("%Y_%m_%d__%H_%M_%S", time.localtime())
         self.procedure_start_str = procedure_start_str
@@ -207,6 +278,8 @@ class AnnotationAgent(Agent):
             timestamp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
             annotation_dict["timestamp"] = timestamp_str
             annotation_dict["elapsed_time_seconds"] = time.time() - self.procedure_start
+            if self.annotation_source:
+                annotation_dict["source"] = self.annotation_source
 
             return annotation_dict
 
@@ -233,21 +306,6 @@ class AnnotationAgent(Agent):
         values (lower‑case, underscores, enums). Ensures required fields exist.
         """
         # Allowed enums per config
-        tools_enum = {"scissors", "hook", "clipper", "grasper", "bipolar", "irrigator", "none"}
-        anatomy_enum = {
-            "gallbladder", "cystic_duct", "cystic_artery", "omentum", "liver",
-            "blood_vessel", "abdominal_wall", "peritoneum", "gut", "specimen_bag", "none"
-        }
-        phase_enum = {
-            "preparation",
-            "calots_triangle_dissection",
-            "clipping_and_cutting",
-            "gallbladder_dissection",
-            "gallbladder_packaging",
-            "cleaning_and_coagulation",
-            "gallbladder_extraction",
-        }
-
         # Key normalization: accept alternatives
         def get_any(d, keys, default=None):
             for k in keys:
@@ -268,41 +326,71 @@ class AnnotationAgent(Agent):
                 return v
             return [v]
 
-        tools_list = [str(x).strip().lower() for x in to_list(raw_tools)]
-        anatomy_list = [str(x).strip().lower() for x in to_list(raw_anatomy)]
+        raw_tools_list = to_list(raw_tools)
+        raw_anatomy_list = to_list(raw_anatomy)
 
-        # Map common synonyms
-        synonym_map_tools = {"forceps": "grasper", "grasper": "grasper", "clip-applier": "clipper"}
-        tools_list = [synonym_map_tools.get(x, x) for x in tools_list]
+        if self.tools_enum is None:
+            tools_list = [str(x).strip() for x in raw_tools_list if str(x).strip()]
+            if not tools_list:
+                tools_list = list(self.default_tools_value)
+            tools_list = list(dict.fromkeys(tools_list))
+        else:
+            tools_list = []
+            for item in raw_tools_list:
+                token = str(item).strip().lower()
+                token = self._tool_synonym_map.get(token, token)
+                if token in self.tools_enum:
+                    tools_list.append(token)
+            if not tools_list:
+                tools_list = [t for t in self.default_tools_value if t in self.tools_enum]
+            if not tools_list:
+                tools_list = [next(iter(self.tools_enum))]
+            tools_list = sorted(list(dict.fromkeys(tools_list)))
 
-        # Enforce enums; if empty, use ['none']
-        tools_list = [x for x in tools_list if x in tools_enum]
-        if not tools_list:
-            tools_list = ["none"]
+        if self.anatomy_enum is None:
+            anatomy_list = [str(x).strip() for x in raw_anatomy_list if str(x).strip()]
+            if not anatomy_list:
+                anatomy_list = list(self.default_anatomy_value)
+            anatomy_list = list(dict.fromkeys(anatomy_list))
+        else:
+            anatomy_list = []
+            for item in raw_anatomy_list:
+                token = str(item).strip().lower().replace(" ", "_")
+                if token in self.anatomy_enum:
+                    anatomy_list.append(token)
+            if not anatomy_list:
+                anatomy_list = [a for a in self.default_anatomy_value if a in self.anatomy_enum]
+            if not anatomy_list:
+                anatomy_list = [next(iter(self.anatomy_enum))]
+            anatomy_list = sorted(list(dict.fromkeys(anatomy_list)))
 
-        anatomy_list = [x.replace(" ", "_") for x in anatomy_list]
-        anatomy_list = [x for x in anatomy_list if x in anatomy_enum]
-        if not anatomy_list:
-            anatomy_list = ["none"]
+        phase = str(raw_phase).strip()
+        if not phase:
+            phase = self.default_phase
 
-        # Normalize phase: lower, replace hyphens/spaces with underscores
-        phase = str(raw_phase).strip().lower().replace("-", "_").replace(" ", "_")
-        if phase not in phase_enum:
-            # Try some heuristic corrections
-            if "clip" in phase and "cut" in phase:
-                phase = "clipping_and_cutting"
-            elif "calot" in phase or "triangle" in phase:
-                phase = "calots_triangle_dissection"
-            elif "pack" in phase:
-                phase = "gallbladder_packaging"
-            elif "dissect" in phase and "gallbladder" in phase:
-                phase = "gallbladder_dissection"
-            elif "clean" in phase or "coag" in phase:
-                phase = "cleaning_and_coagulation"
-            elif "extract" in phase:
-                phase = "gallbladder_extraction"
-            else:
-                phase = "preparation"
+        if self.phase_enum is not None:
+            phase_normalized = phase.lower().replace("-", "_").replace(" ", "_")
+            if phase_normalized not in self.phase_enum:
+                if "clip" in phase_normalized and "cut" in phase_normalized:
+                    phase_normalized = "clipping_and_cutting"
+                elif "calot" in phase_normalized or "triangle" in phase_normalized:
+                    phase_normalized = "calots_triangle_dissection"
+                elif "pack" in phase_normalized:
+                    phase_normalized = "gallbladder_packaging"
+                elif "dissect" in phase_normalized and "gallbladder" in phase_normalized:
+                    phase_normalized = "gallbladder_dissection"
+                elif "clean" in phase_normalized or "coag" in phase_normalized:
+                    phase_normalized = "cleaning_and_coagulation"
+                elif "extract" in phase_normalized:
+                    phase_normalized = "gallbladder_extraction"
+            if phase_normalized not in self.phase_enum:
+                fallback = self.default_phase.strip().lower().replace("-", "_").replace(" ", "_") if self.default_phase else ""
+                phase_normalized = fallback if fallback in self.phase_enum else next(iter(self.phase_enum))
+            phase = phase_normalized
+        else:
+            phase = phase.strip()
+            if not phase:
+                phase = self.default_phase
 
         # Description: if missing, synthesize a concise one
         description = raw_desc
@@ -311,11 +399,11 @@ class AnnotationAgent(Agent):
             if tools_list and anatomy_list and tools_list != ["none"] and anatomy_list != ["none"]:
                 description = f"{tools_list[0]} interacting with {anatomy_list[0]}"
             else:
-                description = "Scene reviewed; limited identifiable details"
+                description = self.scene_fallback_description
 
         return {
-            "tools": sorted(list(dict.fromkeys(tools_list))),
-            "anatomy": sorted(list(dict.fromkeys(anatomy_list))),
+            "tools": list(dict.fromkeys(tools_list)),
+            "anatomy": list(dict.fromkeys(anatomy_list)),
             "surgical_phase": phase,
             "description": description.strip(),
         }

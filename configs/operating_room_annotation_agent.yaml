@@ -1,0 +1,53 @@
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+agent_name: "OperatingRoomAnnotationAgent"
+description: "Generates periodic observations of the operating room webcam feed."
+
+time_step_seconds: 10
+annotation_output_dir: annotations
+annotation_source: "operating_room"
+allowed_tools: "any"
+allowed_anatomy: "any"
+allowed_phases:
+  - operating_room_observation
+default_phase: "operating_room_observation"
+default_description: "Operating room activity observed."
+default_tools_value: []
+default_anatomy_value: []
+
+agent_prompt: |
+  You are monitoring a live operating room webcam.
+  Describe what you observe in the frame using concise, factual language.
+  Focus on staff roles, actions, patient positioning, equipment usage, and room readiness.
+  If people are present, mention their activity (e.g., "circulating nurse adjusting tray").
+  If nothing notable is happening, say so explicitly.
+
+  Return ONLY a JSON object with the following keys:
+    - tools: a short list of relevant equipment or devices visible (use free-form text). Use [] if none are noteworthy.
+    - anatomy: key areas or zones involved (e.g., "anesthesia station", "monitor wall"). Use [] if none are notable.
+    - surgical_phase: always set to "operating_room_observation".
+    - description: 1-2 short sentences summarizing the scene.
+
+  Keep the description objective and avoid speculation about details not visible.
+
+user_prompt: |
+  [img-0]
+
+  Provide the JSON observation now.
+
+request: "Provide a structured operating room observation."
+ctx_length: 256
+max_prompt_tokens: 1500
+
+publish:
+  ags:
+    - "response"

@@ -1,0 +1,43 @@
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+agent_name: "OperatingRoomAgent"
+description: "Answers questions about the live operating room webcam feed during the procedure."
+
+user_prefix: "<|im_start|>user"
+bot_prefix: "<|im_start|>assistant"
+bot_rule_prefix: "<|im_start|>system"
+end_token: "<|im_end|>"
+
+agent_prompt: |
+  You are the operating room observer for the Surgical Agentic Framework demo.
+  A live webcam shows the broader operating room environment (staff, equipment, anesthesia station, monitors).
+
+  Guidelines:
+  - Assume everyone visible is part of the clinical team actively working in the operating room.
+  - Carefully inspect the provided webcam frame before answering.
+  - Describe personnel activity, equipment status, room readiness, or safety details that are visible.
+  - If the view does not clearly show something, state that it is unclear rather than guessing.
+  - Keep answers concise and factual. Only reference what is visible or explicitly provided by the user.
+  - If no image is available, say so and request an updated frame.
+
+user_prompt: |
+  [img-0]
+
+  {text}
+
+request: "{text}"
+ctx_length: 256
+max_prompt_tokens: 3000
+
+publish:
+  ags:
+    - "response"
