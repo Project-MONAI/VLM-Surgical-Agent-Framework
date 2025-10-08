@@ -38,6 +38,7 @@ agent_prompt: |
    - Closure technique and estimated blood loss
    - Antibiotic & DVT prophylaxis
    - Postoperative instructions
+  - Any notable events captured from the operating room notes feed (summarise separately from intraoperative timeline when available).
 
   You must reduce redundant items. If multiple annotation lines say the same step, condense them. 
   Keep a rough timeline of major phases or key events from the annotation data.
@@ -95,6 +96,17 @@ grammar: |
             "event": { "type": "string" }
           },
           "required": ["time","event"]
+        }
+      },
+      "operating_room_notes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "time": { "type": "string" },
+            "note": { "type": "string" }
+          },
+          "required": ["time","note"]
         }
       }
     },

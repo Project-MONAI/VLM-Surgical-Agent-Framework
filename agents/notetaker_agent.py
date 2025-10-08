@@ -49,6 +49,10 @@ class NotetakerAgent(Agent):
         os.makedirs(self.images_subdir, exist_ok=True)
 
         self.notes = []
+        self.notes_by_category = {
+            "procedure": [],
+            "operating_room": [],
+        }
 
     def _skip_llm_wait(self, timeout=60):
         self._logger.debug("NotetakerAgent does NOT need an LLM, skipping server wait.")
@@ -66,25 +70,41 @@ class NotetakerAgent(Agent):
             # We'll decode and write the image
             image_file = self._save_image(visual_info["image_b64"], timestamp_str)
 
+        note_category = "procedure"
+        if visual_info:
+            candidate = visual_info.get("note_category") or visual_info.get("feed")
+            if candidate:
+                normalized = str(candidate).strip().lower().replace(" ", "_")
+                if normalized == "operating_room":
+                    note_category = "operating_room"
+
         note = {
             "timestamp": timestamp_str,
             "text": user_text,
+            "category": note_category,
         }
         if image_file:
             note["image_file"] = image_file
 
+        bucket = self.notes_by_category.setdefault(note_category, [])
+        bucket.append(note)
         self.notes.append(note)
         self.append_json_to_file(note, self.notes_filepath)
 
         # Include the actual note content in the response so the UI can display it
+        category_display = note_category.replace("_", " ")
+        total_notes = len(self.notes)
+        category_total = len(bucket)
         response = (
-            f"Note recorded (timestamp={timestamp_str}). "
-            f"Total notes so far: {len(self.notes)}. "
+            f"Note recorded on {category_display} track (timestamp={timestamp_str}). "
+            f"{category_display.title()} notes: {category_total}. "
+            f"Total notes so far: {total_notes}. "
             f"Note: {user_text}"
         )
         return {
             "name": "NotetakerAgent",
-            "response": response
+            "response": response,
+            "note_category": note_category,
         }
 
     def _save_image(self, data_uri, timestamp_str):

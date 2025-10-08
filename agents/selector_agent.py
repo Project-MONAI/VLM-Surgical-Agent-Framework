@@ -11,13 +11,20 @@
 
 import logging
 import json
-from typing import Literal
+from typing import Literal, Optional
 from pydantic import BaseModel
 from .base_agent import Agent 
 
 class SelectorOutput(BaseModel):
     corrected_input: str
-    selection: Literal["ChatAgent", "NotetakerAgent", "PostOpNoteAgent", "EHRAgent"]
+    selection: Literal[
+        "ChatAgent",
+        "NotetakerAgent",
+        "PostOpNoteAgent",
+        "EHRAgent",
+        "OperatingRoomAgent",
+    ]
+    context: Optional[Literal["procedure", "operating_room"]] = None
 
 class SelectorAgent(Agent):
     def __init__(self, settings_path, response_handler):
@@ -31,9 +38,9 @@ class SelectorAgent(Agent):
 
         user_text = (
             f"User said: {text}\n\n"
-            "Please ONLY return JSON in the shape:\n"
-            '{"corrected_input": "...", "selection": "ChatAgent"}\n'
-            "with selection in [ChatAgent, NotetakerAgent, PostOpNoteAgent]."
+            "Return JSON matching the schema:"
+            '\n{"corrected_input": "...", "selection": "ChatAgent", "context": "procedure"}'
+            "\nOnly include the optional context field when you are confident whether the request refers to the surgical procedure feed or the operating room webcam."
         )
         messages.append({"role": "user", "content": user_text})
 
@@ -65,10 +72,16 @@ class SelectorAgent(Agent):
             parsed = SelectorOutput.model_validate_json(raw_json_str)
             selected_agent = parsed.selection
             corrected_text = parsed.corrected_input
+            selection_context = parsed.context
 
-            self._logger.debug(f"Selected agent: {selected_agent}, corrected text: {corrected_text}")
-            return selected_agent, corrected_text
+            self._logger.debug(
+                "Selected agent: %s (context=%s), corrected text: %s",
+                selected_agent,
+                selection_context,
+                corrected_text,
+            )
+            return selected_agent, corrected_text, selection_context
 
         except Exception as e:
             self._logger.error(f"Error in process_request: {e}", exc_info=True)
-            return None, None
+            return None, None, None

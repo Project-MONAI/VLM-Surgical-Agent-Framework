@@ -33,6 +33,8 @@ class Agent(ABC):
     """
 
     _llm_lock = Lock()
+    _file_locks: dict[str, Lock] = {}
+    _file_locks_lock = Lock()
     
     def __init__(self, settings_path, response_handler, agent_key=None):
         self._logger = logging.getLogger(f"{__name__}.{type(self).__name__}")
@@ -464,19 +466,22 @@ class Agent(ABC):
 
     def append_json_to_file(self, json_object, file_path):
         try:
-            if not os.path.isfile(file_path):
-                with open(file_path, 'w') as f:
-                    json.dump([json_object], f, indent=2)
-            else:
-                with open(file_path, 'r') as f:
-                    try:
-                        data = json.load(f)
-                    except json.JSONDecodeError:
+            with Agent._file_locks_lock:
+                file_lock = Agent._file_locks.setdefault(file_path, Lock())
+            with file_lock:
+                if not os.path.isfile(file_path):
+                    with open(file_path, 'w') as f:
+                        json.dump([json_object], f, indent=2)
+                else:
+                    with open(file_path, 'r') as f:
+                        try:
+                            data = json.load(f)
+                        except json.JSONDecodeError:
+                            data = []
+                    if not isinstance(data, list):
                         data = []
-                if not isinstance(data, list):
-                    data = []
-                data.append(json_object)
-                with open(file_path, 'w') as f:
-                    json.dump(data, f, indent=2)
+                    data.append(json_object)
+                    with open(file_path, 'w') as f:
+                        json.dump(data, f, indent=2)
         except Exception as e:
             self._logger.error(f"append_json_to_file error: {e}", exc_info=True)

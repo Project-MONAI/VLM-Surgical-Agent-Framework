@@ -14,7 +14,7 @@ import json
 import math
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from .base_agent import Agent
 
 class PostOpNoteAgent(Agent):
@@ -282,11 +282,116 @@ class PostOpNoteAgent(Agent):
             return None
 
     # ----------------- Deterministic pipeline helpers -----------------
-    def _parse_ts(self, ts: str):
+    def _parse_ts(self, ts):
+        if isinstance(ts, datetime):
+            return ts
+        if isinstance(ts, (int, float)):
+            try:
+                return datetime.fromtimestamp(float(ts))
+            except Exception:
+                return None
+        if not isinstance(ts, str):
+            return None
+        ts = ts.strip()
+        if not ts:
+            return None
         try:
             return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
         except Exception:
+            pass
+        try:
+            return datetime.fromisoformat(ts)
+        except Exception:
+            pass
+        if ts.replace('.', '', 1).isdigit():
+            try:
+                return datetime.fromtimestamp(float(ts))
+            except Exception:
+                return None
+        return None
+
+    def _format_offset_label(self, seconds: float, has_anchor: bool, dt_obj: datetime = None) -> str:
+        try:
+            seconds = float(seconds)
+        except Exception:
+            return "Not specified"
+        if has_anchor and dt_obj is not None:
+            return dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+        return f"T+{self._format_duration(seconds)}"
+
+    def _offset_to_datetime(self, seconds: float, anchor_dt: datetime, anchor_elapsed: float):
+        try:
+            seconds = float(seconds)
+        except Exception:
             return None
+        try:
+            if anchor_dt is not None and isinstance(anchor_elapsed, (int, float)):
+                delta = seconds - float(anchor_elapsed)
+                return anchor_dt + timedelta(seconds=delta)
+        except Exception:
+            self._logger.debug("Failed to align timestamp offset with anchor; falling back to absolute epoch.")
+        # When no reliable anchor exists, use a deterministic epoch baseline for ordering only.
+        try:
+            return datetime.fromtimestamp(seconds)
+        except Exception:
+            try:
+                return datetime.min + timedelta(seconds=seconds)
+            except Exception:
+                return None
+
+    def _normalize_timestamp_value(self, raw_ts, elapsed, anchor_dt, anchor_elapsed):
+        parsed_dt = None
+        label = None
+
+        # Direct parse attempt first
+        parsed_dt = self._parse_ts(raw_ts)
+        if parsed_dt:
+            label = parsed_dt.strftime("%Y-%m-%d %H:%M:%S")
+            return label, parsed_dt
+
+        numeric_candidate = None
+        if isinstance(raw_ts, (int, float)):
+            numeric_candidate = float(raw_ts)
+        elif isinstance(raw_ts, str):
+            ts_str = raw_ts.strip()
+            if ts_str.replace('.', '', 1).isdigit():
+                numeric_candidate = float(ts_str)
+
+        if numeric_candidate is None and isinstance(elapsed, (int, float)):
+            numeric_candidate = float(elapsed)
+
+        if numeric_candidate is not None:
+            parsed_dt = self._offset_to_datetime(numeric_candidate, anchor_dt, anchor_elapsed)
+            label = self._format_offset_label(numeric_candidate, anchor_dt is not None and anchor_elapsed is not None, parsed_dt)
+            return label, parsed_dt
+
+        if isinstance(raw_ts, str) and raw_ts.strip():
+            return raw_ts.strip(), None
+
+        return "Not specified", None
+
+    def _annotate_time_metadata(self, records):
+        if not records:
+            return
+        anchor_dt = None
+        anchor_elapsed = None
+        for rec in records:
+            parsed = self._parse_ts(rec.get("timestamp"))
+            if parsed:
+                anchor_dt = parsed
+                el = rec.get("elapsed_time_seconds")
+                if isinstance(el, (int, float)):
+                    anchor_elapsed = float(el)
+                break
+        for rec in records:
+            label, parsed_dt = self._normalize_timestamp_value(
+                rec.get("timestamp"),
+                rec.get("elapsed_time_seconds"),
+                anchor_dt,
+                anchor_elapsed,
+            )
+            rec["_normalized_timestamp"] = label
+            rec["_parsed_timestamp"] = parsed_dt
 
     def _format_duration(self, seconds):
         if seconds is None:
@@ -302,21 +407,47 @@ class PostOpNoteAgent(Agent):
 
     def _extract_facts(self, ann_list, note_list):
         def ts_key(x):
+            dt = x.get("_parsed_timestamp")
+            if dt:
+                return dt
             t = x.get("timestamp")
-            dt = self._parse_ts(t) if isinstance(t, str) else None
+            dt = self._parse_ts(t) if isinstance(t, (str, int, float)) else None
             return dt or datetime.min
 
-        anns = sorted([a for a in ann_list if isinstance(a, dict)], key=ts_key)
-        notes = sorted([n for n in note_list if isinstance(n, dict)], key=ts_key)
+        ann_dicts = [a for a in ann_list if isinstance(a, dict)]
+        self._annotate_time_metadata(ann_dicts)
+        operating_room_annotations = sorted(
+            [a for a in ann_dicts if str(a.get("source") or "").lower() == "operating_room"],
+            key=ts_key,
+        )
+        anns = sorted(
+            [a for a in ann_dicts if str(a.get("source") or "").lower() != "operating_room"],
+            key=ts_key,
+        )
+        notes_all = [n for n in note_list if isinstance(n, dict)]
+        self._annotate_time_metadata(notes_all)
+        self._annotate_time_metadata(operating_room_annotations)
+        notes_all = sorted(notes_all, key=ts_key)
 
         start_ts_str = None
         end_ts_str = None
+        start_dt = None
+        end_dt = None
         if anns:
-            start_ts_str = anns[0].get("timestamp") or None
-            end_ts_str = anns[-1].get("timestamp") or None
-        elif notes:
-            start_ts_str = notes[0].get("timestamp") or None
-            end_ts_str = notes[-1].get("timestamp") or None
+            start_ts_str = anns[0].get("_normalized_timestamp") or anns[0].get("timestamp") or None
+            end_ts_str = anns[-1].get("_normalized_timestamp") or anns[-1].get("timestamp") or None
+            start_dt = anns[0].get("_parsed_timestamp") or self._parse_ts(anns[0].get("timestamp"))
+            end_dt = anns[-1].get("_parsed_timestamp") or self._parse_ts(anns[-1].get("timestamp"))
+        elif notes_all:
+            start_ts_str = notes_all[0].get("_normalized_timestamp") or notes_all[0].get("timestamp") or None
+            end_ts_str = notes_all[-1].get("_normalized_timestamp") or notes_all[-1].get("timestamp") or None
+            start_dt = notes_all[0].get("_parsed_timestamp") or self._parse_ts(notes_all[0].get("timestamp"))
+            end_dt = notes_all[-1].get("_parsed_timestamp") or self._parse_ts(notes_all[-1].get("timestamp"))
+        elif operating_room_annotations:
+            start_ts_str = operating_room_annotations[0].get("_normalized_timestamp") or operating_room_annotations[0].get("timestamp") or None
+            end_ts_str = operating_room_annotations[-1].get("_normalized_timestamp") or operating_room_annotations[-1].get("timestamp") or None
+            start_dt = operating_room_annotations[0].get("_parsed_timestamp") or self._parse_ts(operating_room_annotations[0].get("timestamp"))
+            end_dt = operating_room_annotations[-1].get("_parsed_timestamp") or self._parse_ts(operating_room_annotations[-1].get("timestamp"))
 
         duration_seconds = None
         for a in reversed(anns):
@@ -324,8 +455,8 @@ class PostOpNoteAgent(Agent):
                 duration_seconds = a["elapsed_time_seconds"]
                 break
         if duration_seconds is None and start_ts_str and end_ts_str:
-            d0 = self._parse_ts(start_ts_str)
-            d1 = self._parse_ts(end_ts_str)
+            d0 = start_dt or self._parse_ts(start_ts_str)
+            d1 = end_dt or self._parse_ts(end_ts_str)
             if d0 and d1:
                 duration_seconds = max(0, int((d1 - d0).total_seconds()))
 
@@ -341,26 +472,30 @@ class PostOpNoteAgent(Agent):
                     anatomy_set.add(an)
 
         # Build a smoothed sequence of phases with dwell/consecutive thresholds
-        smoothed_segments = []  # list of {phase, start_time}
+        smoothed_segments = []  # list of {phase, start_time, start_dt}
         run_phase = None
         run_count = 0
         run_start_ts = None
+        run_start_dt = None
         accepted_phase = None
         last_accept_dt = None
 
         for a in anns:
             phase = a.get("surgical_phase")
-            ts = a.get("timestamp") or ""
-            ts_dt = self._parse_ts(ts)
+            ts_dt = a.get("_parsed_timestamp")
+            if not ts_dt:
+                ts_dt = self._parse_ts(a.get("timestamp"))
             if not isinstance(phase, str) or not ts_dt:
                 continue
+            ts_label = a.get("_normalized_timestamp") or a.get("timestamp") or "Not specified"
 
             if phase == run_phase:
                 run_count += 1
             else:
                 run_phase = phase
                 run_count = 1
-                run_start_ts = ts
+                run_start_ts = ts_label
+                run_start_dt = ts_dt
 
             # Consider accepting a new phase when run_count and dwell satisfied
             if accepted_phase != run_phase and run_count >= self.phase_min_consecutive:
@@ -368,7 +503,11 @@ class PostOpNoteAgent(Agent):
                 if last_accept_dt is not None:
                     dwell_ok = (ts_dt - last_accept_dt).total_seconds() >= self.phase_min_dwell_seconds
                 if dwell_ok:
-                    smoothed_segments.append({"phase": run_phase, "start_time": run_start_ts})
+                    smoothed_segments.append({
+                        "phase": run_phase,
+                        "start_time": run_start_ts,
+                        "start_dt": run_start_dt,
+                    })
                     accepted_phase = run_phase
                     last_accept_dt = ts_dt
 
@@ -387,20 +526,30 @@ class PostOpNoteAgent(Agent):
         for i, seg in enumerate(smoothed_segments):
             ph = seg["phase"]
             st = seg["start_time"]
-            st_dt = self._parse_ts(st)
+            st_dt = seg.get("start_dt") or self._parse_ts(st)
             if not st_dt:
                 continue
             if i + 1 < len(smoothed_segments):
-                next_dt = self._parse_ts(smoothed_segments[i + 1]["start_time"]) or self._parse_ts(end_ts_str)
+                next_seg = smoothed_segments[i + 1]
+                next_dt = next_seg.get("start_dt") or self._parse_ts(next_seg.get("start_time")) or end_dt
             else:
-                next_dt = self._parse_ts(end_ts_str)
+                next_dt = end_dt
             if next_dt:
                 phase_durations[ph] = phase_durations.get(ph, 0) + max(0, int((next_dt - st_dt).total_seconds()))
 
         # Build phase events from smoothed segments
-        phase_events = [{"time": seg["start_time"], "event": f"Phase started: {seg['phase']}"} for seg in smoothed_segments]
+        phase_events = [
+            {
+                "time": seg["start_time"],
+                "event": f"Phase started: {seg['phase']}",
+                "__dt": seg.get("start_dt"),
+            }
+            for seg in smoothed_segments
+        ]
 
         note_events = []
+        operating_room_annotation_events = []
+        operating_room_note_events = []
         complications_flags = []
         blood_loss_estimate = None
         antibiotic_prophylaxis = None
@@ -414,12 +563,37 @@ class PostOpNoteAgent(Agent):
             "heparin", "enoxaparin", "lovenox", "lmwh", "compression boots", "boots",
             "sequential compression", "scd", "stockings"
         ]
-        for n in notes:
-            ts = n.get("timestamp") or ""
+        procedure_notes_compact = []
+        operating_room_notes_compact = []
+        for n in notes_all:
+            ts_label = n.get("_normalized_timestamp") or n.get("timestamp") or "Not specified"
+            ts_dt = n.get("_parsed_timestamp") or self._parse_ts(n.get("timestamp"))
             txt = (n.get("text") or "").strip()
             if not txt:
                 continue
-            note_events.append({"time": ts, "event": f"Note: {txt}"})
+            category = str(n.get("category") or "procedure").strip().lower().replace(" ", "_")
+            event_prefix = "Note"
+            target_list = note_events
+            if category == "operating_room":
+                event_prefix = "Operating room note"
+                target_list = operating_room_note_events
+                operating_room_notes_compact.append({
+                    "timestamp": ts_label,
+                    "text": txt,
+                    "image_file": n.get("image_file"),
+                })
+            else:
+                procedure_notes_compact.append({
+                    "timestamp": ts_label,
+                    "text": txt,
+                    "image_file": n.get("image_file"),
+                })
+
+            target_list.append({
+                "time": ts_label,
+                "event": f"{event_prefix}: {txt}",
+                "__dt": ts_dt,
+            })
             low = txt.lower()
             if any(k in low for k in ["bleed", "perforat", "converted", "complication", "leak", "injury", "spillage"]):
                 complications_flags.append(txt)
@@ -433,7 +607,24 @@ class PostOpNoteAgent(Agent):
             if any(term in low for term in dvt_terms) and not dvt_prophylaxis:
                 dvt_prophylaxis = txt
 
-        timeline = sorted(phase_events + note_events, key=lambda e: self._parse_ts(e.get("time")) or datetime.min)
+        for entry in operating_room_annotations:
+            ts_label = entry.get("_normalized_timestamp") or entry.get("timestamp") or "Not specified"
+            ts_dt = entry.get("_parsed_timestamp") or self._parse_ts(entry.get("timestamp"))
+            desc = (entry.get("description") or "").strip()
+            if (not ts_label or ts_label == "Not specified") and not desc:
+                continue
+            if desc:
+                desc = desc[:500]
+            operating_room_annotation_events.append({
+                "time": ts_label,
+                "event": f"Operating room observation: {desc}" if desc else "Operating room observation",
+                "__dt": ts_dt,
+            })
+
+        timeline = sorted(
+            phase_events + note_events + operating_room_note_events + operating_room_annotation_events,
+            key=lambda e: (e.get("__dt") or self._parse_ts(e.get("time")) or datetime.min),
+        )
         # Cap timeline length if configured
         if self.timeline_max_entries and len(timeline) > self.timeline_max_entries:
             omitted = len(timeline) - self.timeline_max_entries
@@ -444,11 +635,17 @@ class PostOpNoteAgent(Agent):
                 "event": f"… {omitted} events omitted …",
             }
             timeline = timeline[:keep_head] + [ellipsis_event] + timeline[-keep_tail:]
+        timeline_clean = []
+        for item in timeline:
+            timeline_clean.append({
+                "time": item.get("time") or "Not specified",
+                "event": (item.get("event") or "")[:500],
+            })
         # Keep a compact copy of annotations for optional phase details
         anns_compact = []
         for a in anns:
             anns_compact.append({
-                "timestamp": a.get("timestamp"),
+                "timestamp": a.get("_normalized_timestamp") or a.get("timestamp"),
                 "tools": a.get("tools", []),
                 "anatomy": a.get("anatomy", []),
             })
@@ -462,12 +659,21 @@ class PostOpNoteAgent(Agent):
             "phase_durations": phase_durations,
             "tools": sorted(tools_set),
             "anatomy": sorted(anatomy_set),
-            "timeline": timeline,
+            "timeline": timeline_clean,
             "annotations": anns_compact,
             "complications_flags": complications_flags,
             "blood_loss_estimate": blood_loss_estimate,
             "antibiotic_prophylaxis": antibiotic_prophylaxis,
             "dvt_prophylaxis": dvt_prophylaxis,
+            "procedure_notes": procedure_notes_compact,
+            "operating_room_notes": operating_room_notes_compact,
+            "operating_room_annotations": [
+                {
+                    "timestamp": entry.get("_normalized_timestamp") or entry.get("timestamp"),
+                    "description": (entry.get("description") or "")[:500],
+                }
+                for entry in operating_room_annotations
+            ],
         }
         self._logger.debug(f"Extracted facts: {facts}")
         return facts
@@ -513,6 +719,16 @@ class PostOpNoteAgent(Agent):
                 for e in facts.get("timeline", [])
             ],
         }
+
+        operating_room_notes = [
+            {
+                "time": item.get("timestamp") or "Not specified",
+                "note": (item.get("text") or "")[:500],
+            }
+            for item in facts.get("operating_room_notes", [])
+        ]
+        if operating_room_notes:
+            post_op["operating_room_notes"] = operating_room_notes
         # Optional extras: per‑phase summary and details
         if self.include_phase_summary:
             phase_summary = []
