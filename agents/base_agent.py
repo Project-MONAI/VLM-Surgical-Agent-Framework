@@ -344,7 +344,7 @@ class Agent(ABC):
             except Exception as e:
                 # Fallback to chat.completions (older path)
                 self._logger.warning(
-                    f"Responses API failed for multimodal: {e}. Falling back to chat.completions."
+                    f"Responses API failed for multimodal: {str(e)[:200]}... Falling back to chat.completions."
                 )
                 messages: list[dict[str, Any]] = []
                 if self.agent_prompt:
