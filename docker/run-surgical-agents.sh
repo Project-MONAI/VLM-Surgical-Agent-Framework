@@ -303,6 +303,7 @@ run_vllm() {
         --restart unless-stopped \
         $VLLM_IMAGE \
         --model $model_name \
+        --served-model-name surgical-vlm \
         --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION} \
         ${ENFORCE_EAGER_FLAG} \
         --max-model-len 4096 \
@@ -317,11 +318,17 @@ run_vllm() {
 # Function to run Whisper server
 run_whisper() {
     echo -e "\n${BLUE}🚀 Starting Whisper Server...${NC}"
+    
+    # Set default Whisper port if not provided
+    WHISPER_PORT=${WHISPER_PORT:-43001}
+    echo -e "${BLUE}💡 Using Whisper port: ${WHISPER_PORT}${NC}"
+    
     docker run -d \
         --name vlm-surgical-whisper \
         --gpus all \
         --net host \
         -v ${REPO_PATH}/models/whisper:/root/whisper \
+        -e WHISPER_PORT=${WHISPER_PORT} \
         --restart unless-stopped \
         vlm-surgical-agents:whisper-dgpu \
         --model_cache_dir /root/whisper

@@ -27,7 +27,8 @@ RUN pip install tiktoken \
     starlette_context \
     elevenlabs \
     openai \
-    sentence-transformers
+    sentence-transformers \
+    faiss-cpu
 
 # Copy the app
 COPY servers/app.py servers/app.py
@@ -36,6 +37,7 @@ COPY configs configs
 COPY agents agents
 COPY ehr ehr
 COPY utils utils
+COPY ehr ehr
 
 
 EXPOSE 8050

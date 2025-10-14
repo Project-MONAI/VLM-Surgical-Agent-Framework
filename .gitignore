@@ -6,6 +6,10 @@ node_modules/
 npm-debug.log
 yarn-debug.log
 yarn-error.log
+package-lock.json
+
+# Build artifacts
+web/static/styles.compiled.css
 
 # Python
 __pycache__/
@@ -54,3 +58,6 @@ uploaded_videos/
 
 # TTS models
 tts-service/models/
+
+# Annotation files
+annotations/
