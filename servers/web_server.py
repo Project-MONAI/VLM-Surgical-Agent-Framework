@@ -39,6 +39,7 @@ class Webserver(threading.Thread):
         self.msg_callback = msg_callback
         self.audio_ws_port = audio_ws_port
         self.frame_queue = queue.Queue()
+        self.operating_room_frame_queue = queue.Queue()
         
         # Create videos directory if it doesn't exist
         self.videos_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploaded_videos')
@@ -49,6 +50,7 @@ class Webserver(threading.Thread):
         
         # Store the most recent frame for follow-up questions
         self.lastProcessedFrame = None
+        self.lastOperatingRoomFrame = None
         
         # Initialize the post-op note agent
         try:
@@ -104,18 +106,38 @@ class Webserver(threading.Thread):
         # Create a socket to talk to Whisper. We'll reconnect for each new audio session.
         self.create_whisper_socket()
 
-    def create_whisper_socket(self):
-        """Create a fresh socket to the Whisper server (port 43001)."""
-        self.whisper_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            self.whisper_socket.connect(('localhost', 43001))
-            self._logger.debug("Created + connected fresh socket to Whisper server.")
-        except ConnectionRefusedError:
-            self._logger.error("Connection to Whisper server refused. Is the Whisper server running?")
-            raise
-        except Exception as e:
-            self._logger.error(f"Error connecting to Whisper server: {e}")
-            raise
+    def create_whisper_socket(self, retries: int = 5, delay: float = 1.0):
+        """Create (or recreate) a socket to the Whisper server with simple retry logic."""
+        last_error = None
+        for attempt in range(1, retries + 1):
+            self.whisper_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                self.whisper_socket.connect(('localhost', 43001))
+                self._logger.debug("Created + connected fresh socket to Whisper server.")
+                return
+            except ConnectionRefusedError as err:
+                last_error = err
+                self._logger.warning(
+                    "Connection to Whisper server refused (attempt %s/%s).", attempt, retries
+                )
+            except Exception as err:
+                last_error = err
+                self._logger.error(f"Error connecting to Whisper server: {err}")
+                break
+            finally:
+                if last_error:
+                    try:
+                        self.whisper_socket.close()
+                    except Exception:
+                        pass
+
+            if attempt < retries:
+                time.sleep(delay)
+
+        self._logger.error("Failed to connect to Whisper server after %s attempts.", retries)
+        if last_error:
+            raise last_error
+        raise ConnectionError("Unable to connect to Whisper server")
             
     def delayed_socket_recreation(self, delay=5):
         """Try to recreate the whisper socket after a delay"""
@@ -270,6 +292,14 @@ class Webserver(threading.Thread):
                                 # Also store it for future use
                                 self.lastProcessedFrame = frame_data
                             continue
+                        # Handle automatic operating room frames
+                        if data.get('operating_room_auto_frame') == True:
+                            or_frame = data.get('operating_room_frame_data')
+                            if or_frame:
+                                self._logger.debug("Got operating_room_auto_frame data from client.")
+                                self.operating_room_frame_queue.put(or_frame)
+                                self.lastOperatingRoomFrame = or_frame
+                            continue
                         # Also check for 'frame_data' in non-auto messages
                         frame_data = data.pop('frame_data', None)
                         if frame_data:
@@ -277,6 +307,12 @@ class Webserver(threading.Thread):
                             self.frame_queue.put(frame_data)
                             # Store the frame for future use
                             self.lastProcessedFrame = frame_data
+                        # And allow explicit operating room frames to flow through
+                        or_frame = data.pop('operating_room_frame_data', None)
+                        if or_frame:
+                            self._logger.debug("Got operating room frame_data from client.")
+                            self.operating_room_frame_queue.put(or_frame)
+                            self.lastOperatingRoomFrame = or_frame
                         if 'user_input' in data and self.msg_callback:
                             try:
                                 preview = data.get('user_input')

@@ -20,6 +20,8 @@ import io
 import subprocess
 import time
 import math
+import signal
+import errno
 
 # Add project root to path to ensure imports work
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,6 +36,45 @@ import librosa
 # Otherwise, remove/comment out the relevant code below.
 
 logger = logging.getLogger(__name__)
+
+
+def _terminate_processes_using_port(port: int, host: str = "0.0.0.0") -> bool:
+    """Attempt to terminate processes already bound to the given TCP port."""
+    try:
+        # lsof returns PIDs listening on the port; `-nP` for speed and no DNS lookups
+        output = subprocess.check_output(["lsof", "-nP", "-t", f"-iTCP:{port}"])
+    except subprocess.CalledProcessError:
+        return False
+    except FileNotFoundError:
+        logger.error("lsof not available; cannot free port %s", port)
+        return False
+
+    killed_any = False
+    current_pid = os.getpid()
+
+    for line in output.decode().strip().splitlines():
+        try:
+            pid = int(line.strip())
+        except ValueError:
+            continue
+
+        if pid == current_pid:
+            continue
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed_any = True
+            logger.warning("Sent SIGTERM to PID %s using port %s", pid, port)
+        except ProcessLookupError:
+            continue
+        except PermissionError as e:
+            logger.error("Insufficient permissions to terminate PID %s: %s", pid, e)
+
+    if killed_any:
+        # give processes a moment to exit cleanly
+        time.sleep(0.5)
+
+    return killed_any
 
 ###############################################################################
 # BEGIN: Inline "whisper_online.py" essentials
@@ -560,7 +601,22 @@ def serve_one_connection(conn):
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     # Enable socket reuse to avoid "Address already in use" errors
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind((args.host, args.port))
+
+    for attempt in range(2):
+        try:
+            s.bind((args.host, args.port))
+            break
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE or attempt == 1:
+                raise
+            logger.warning(
+                "Port %s already in use; attempting to terminate existing listener", args.port
+            )
+            if not _terminate_processes_using_port(args.port, args.host):
+                logger.error("Could not free port %s; aborting.", args.port)
+                raise
+            # Loop will retry bind
+
     s.listen(1)
     logger.info(f"Listening on {(args.host, args.port)}")
     while True:
