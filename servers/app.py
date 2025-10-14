@@ -14,6 +14,7 @@ import re
 import logging
 import os
 import sys
+import time
 from threading import Thread
 
 # Add project root to path to ensure imports work
@@ -25,6 +26,7 @@ from utils.response_handler import ResponseHandler
 from agents.selector_agent import SelectorAgent
 from agents.annotation_agent import AnnotationAgent
 from agents.chat_agent import ChatAgent
+from agents.operating_room_agent import OperatingRoomAgent
 from agents.notetaker_agent import NotetakerAgent
 from agents.post_op_note_agent import PostOpNoteAgent
 from agents.ehr_agent import EHRAgent
@@ -151,39 +153,75 @@ IMPORTANT: This is a TEXT-ONLY SUMMARY request. Do not attempt to identify instr
                 
             try:
                 # Let the selector decide which agent to pick
-                selected_agent_name, corrected_text = selector_agent.process_request(
+                selected_agent_name, corrected_text, selection_context = selector_agent.process_request(
                     user_text, chat_history.to_list()
                 )
                 if not selected_agent_name:
                     logging.error("No agent selected by selector for user_input.")
                     return
 
-                # Check for frame data directly in the payload
-                frame_data = payload.get('frame_data')
-                
-                # If not there, try to get it from the frame_queue
-                if not frame_data and not web.frame_queue.empty():
-                    try:
-                        frame_data = web.frame_queue.get_nowait()
-                    except Exception as e:
-                        logging.error(f"Error retrieving frame data: {e}")
-                
-                # If still no frame, check if there's a lastProcessedFrame in web
-                if not frame_data and hasattr(web, 'lastProcessedFrame') and web.lastProcessedFrame:
-                    frame_data = web.lastProcessedFrame
-                    logging.debug("Using web's last processed frame")
-                
-                # If we have a frame, store it for future use
-                if frame_data:
-                    web.lastProcessedFrame = frame_data
+                if selection_context is None:
+                    selection_context = (
+                        "operating_room" if selected_agent_name == "OperatingRoomAgent" else "procedure"
+                    )
 
-                # Pass the image (if any) along with empty tool labels
-                visual_info = {"image_b64": frame_data, "tool_labels": {}}
+                def _fetch_procedure_frame():
+                    frame = payload.get('frame_data')
+                    if not frame and not web.frame_queue.empty():
+                        try:
+                            frame = web.frame_queue.get_nowait()
+                        except Exception as e:
+                            logging.error(f"Error retrieving procedure frame data: {e}")
+                    if not frame and getattr(web, 'lastProcessedFrame', None):
+                        frame = web.lastProcessedFrame
+                        logging.debug("Using cached procedure frame")
+                    if frame:
+                        web.lastProcessedFrame = frame
+                    return frame
+
+                def _fetch_operating_room_frame():
+                    frame = payload.get('operating_room_frame_data')
+                    queue_obj = getattr(web, 'operating_room_frame_queue', None)
+                    if not frame and queue_obj is not None and not queue_obj.empty():
+                        try:
+                            frame = queue_obj.get_nowait()
+                        except Exception as e:
+                            logging.error(f"Error retrieving operating room frame data: {e}")
+                    last_or_frame = getattr(web, 'lastOperatingRoomFrame', None)
+                    if not frame and last_or_frame:
+                        frame = last_or_frame
+                        logging.debug("Using cached operating room frame")
+                    if frame:
+                        setattr(web, 'lastOperatingRoomFrame', frame)
+                    return frame
+
+                if selection_context == "operating_room":
+                    frame_data = _fetch_operating_room_frame()
+                    if not frame_data:
+                        logging.debug(
+                            "No operating room frame available; falling back to procedure frame for request."
+                        )
+                        frame_data = _fetch_procedure_frame()
+                else:
+                    frame_data = _fetch_procedure_frame()
+
+                # Pass the image (if any) along with metadata about the originating feed
+                visual_info = {
+                    "image_b64": frame_data,
+                    "tool_labels": {},
+                    "feed": selection_context,
+                }
+
+                if selected_agent_name == "NotetakerAgent":
+                    visual_info["note_category"] = (
+                        "operating_room" if selection_context == "operating_room" else "procedure"
+                    )
 
                 # If user input triggers PostOpNoteAgent, do final note generation
                 if selected_agent_name == "PostOpNoteAgent":
                     # Stop the background annotation
                     annotation_agent.stop()
+                    operating_room_annotation_agent.stop()
 
                     # Determine the procedure folder from annotation_agent
                     procedure_folder = os.path.dirname(annotation_agent.annotation_filepath)
@@ -227,12 +265,16 @@ IMPORTANT: This is a TEXT-ONLY SUMMARY request. Do not attempt to identify instr
                 # Check if this is from the NotetakerAgent to tag it for the UI
                 if selected_agent_name == "NotetakerAgent":
                     # Pass along the original user input so the UI can infer note content/title
+                    note_category = response_data.get(
+                        "note_category", visual_info.get("note_category", "procedure")
+                    )
                     web.send_message({
                         "agent_response": response_data["response"],
                         "agent_name": response_data.get("name", "AI Assistant"),
                         "is_note": True,
                         "original_user_input": payload.get('original_user_input', user_text),
                         "user_input": corrected_text,
+                        "note_category": note_category,
                     })
                 else:
                     # Send result to UI
@@ -240,6 +282,7 @@ IMPORTANT: This is a TEXT-ONLY SUMMARY request. Do not attempt to identify instr
                         "agent_response": response_data["response"],
                         "agent_name": response_data.get("name", "AI Assistant"),
                     })
+
             except Exception as e:
                 logging.error(f"Error processing user_input: {e}", exc_info=True)
 
@@ -255,29 +298,46 @@ IMPORTANT: This is a TEXT-ONLY SUMMARY request. Do not attempt to identify instr
     def on_annotation(annotation):
         # Format a simple message for the UI
         surgical_phase = annotation.get("surgical_phase", "unknown")
-        tools = ", ".join(annotation.get("tools", []))
-        anatomy = ", ".join(annotation.get("anatomy", []))
-        
+        tools = ", ".join(t for t in (annotation.get("tools", []) or []) if t and t != "none")
+        anatomy = ", ".join(a for a in (annotation.get("anatomy", []) or []) if a and a != "none")
+
         message = f"Annotation: Phase '{surgical_phase}'"
         if tools:
             message += f" | Tools: {tools}"
         if anatomy:
             message += f" | Anatomy: {anatomy}"
-            
+        description = annotation.get("description")
+        if description:
+            message += f" | {description}"
+
         # Send to UI
-        web.send_message({"agent_response": message})
+        payload = {"agent_response": message}
+        if annotation.get("source") == "operating_room":
+            payload["operating_room_annotation"] = True
+        web.send_message(payload)
     
     # Now create agents, passing web.frame_queue to the AnnotationAgent.
     selector_agent = SelectorAgent("configs/selector.yaml", response_handler)
     annotation_agent = AnnotationAgent("configs/annotation_agent.yaml", response_handler, frame_queue=web.frame_queue)
     annotation_agent.on_annotation_callback = on_annotation
     chat_agent = ChatAgent("configs/chat_agent.yaml", response_handler)
+    operating_room_agent = OperatingRoomAgent("configs/operating_room_agent.yaml", response_handler)
     notetaker_agent = NotetakerAgent("configs/notetaker_agent.yaml", response_handler)
     post_op_note_agent = PostOpNoteAgent("configs/post_op_note_agent.yaml", response_handler)
     ehr_agent = EHRAgent("configs/ehr_agent.yaml", response_handler)
 
+    operating_room_annotation_agent = AnnotationAgent(
+        "configs/operating_room_annotation_agent.yaml",
+        response_handler,
+        frame_queue=web.operating_room_frame_queue,
+        procedure_start_str=annotation_agent.procedure_start_str,
+    )
+    operating_room_annotation_agent.procedure_start = annotation_agent.procedure_start
+    operating_room_annotation_agent.on_annotation_callback = on_annotation
+
     agents = {
         "ChatAgent": chat_agent,
+        "OperatingRoomAgent": operating_room_agent,
         "NotetakerAgent": notetaker_agent,
         "PostOpNoteAgent": post_op_note_agent,
         "EHRAgent": ehr_agent,
