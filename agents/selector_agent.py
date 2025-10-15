@@ -22,6 +22,7 @@ class SelectorOutput(BaseModel):
         "NotetakerAgent",
         "PostOpNoteAgent",
         "EHRAgent",
+        "RobotControlAgent",
         "OperatingRoomAgent",
     ]
     context: Optional[Literal["procedure", "operating_room"]] = None

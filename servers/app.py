@@ -27,6 +27,7 @@ from agents.selector_agent import SelectorAgent
 from agents.annotation_agent import AnnotationAgent
 from agents.chat_agent import ChatAgent
 from agents.operating_room_agent import OperatingRoomAgent
+from agents.robot_control_agent import RobotControlAgent
 from agents.notetaker_agent import NotetakerAgent
 from agents.post_op_note_agent import PostOpNoteAgent
 from agents.ehr_agent import EHRAgent
@@ -322,6 +323,7 @@ IMPORTANT: This is a TEXT-ONLY SUMMARY request. Do not attempt to identify instr
     annotation_agent.on_annotation_callback = on_annotation
     chat_agent = ChatAgent("configs/chat_agent.yaml", response_handler)
     operating_room_agent = OperatingRoomAgent("configs/operating_room_agent.yaml", response_handler)
+    robot_control_agent = RobotControlAgent("configs/robot_control_agent.yaml", response_handler)
     notetaker_agent = NotetakerAgent("configs/notetaker_agent.yaml", response_handler)
     post_op_note_agent = PostOpNoteAgent("configs/post_op_note_agent.yaml", response_handler)
     ehr_agent = EHRAgent("configs/ehr_agent.yaml", response_handler)
@@ -338,6 +340,7 @@ IMPORTANT: This is a TEXT-ONLY SUMMARY request. Do not attempt to identify instr
     agents = {
         "ChatAgent": chat_agent,
         "OperatingRoomAgent": operating_room_agent,
+        "RobotControlAgent": robot_control_agent,
         "NotetakerAgent": notetaker_agent,
         "PostOpNoteAgent": post_op_note_agent,
         "EHRAgent": ehr_agent,

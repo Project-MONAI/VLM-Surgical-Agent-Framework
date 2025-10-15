@@ -1,0 +1,78 @@
+FROM nvcr.io/nvidia/pytorch:25.03-py3
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Install Python 3.11
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-dev \
+        python3.11-venv \
+        python3-pip \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --set python3 /usr/bin/python3.11
+
+# Install system dependencies required by the policy runner stack.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        git \
+        libzmq3-dev \
+        pybind11-dev \
+        libxcb-cursor0 \
+        libgl1 \
+        libglib2.0-0 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Unset PIP_CONSTRAINT to allow specific versions of packages to be installed.
+# NOTE: This could cause issues with GPU drivers on ARM architectures.
+ENV PIP_CONSTRAINT=""
+
+# Python dependencies that the manual setup script installs.
+RUN pip install --no-cache-dir \
+        toml==0.10.2 \
+        dearpygui==2.0.0 \
+        pydantic==2.10.6 \
+        setuptools==75.8.0 \
+        matplotlib \
+        scipy \
+        pyzmq \
+        av==14.4.0 \
+        pyyaml
+
+# Clone and install lerobot at the pinned commit.
+RUN git clone https://github.com/huggingface/lerobot.git /opt/lerobot \
+    && cd /opt/lerobot \
+    && git checkout 483be9aac217c2d8ef16982490f22b2ad091ab46 \
+    && pip install --break-system-packages --ignore-installed -e ".[feetech]"
+
+# Clone and install Isaac-GR00T policy dependencies.
+RUN git clone https://github.com/NVIDIA/Isaac-GR00T /opt/Isaac-GR00T \
+    && cd /opt/Isaac-GR00T \
+    && git checkout 17a77ebf646cf13460cdbc8f49f9ec7d0d63bcb1 \
+    && pip install --break-system-packages -e ".[base]"
+
+# Install flash-attn matching the manual environment script.
+RUN pip install --no-build-isolation flash-attn==2.7.4.post1
+
+# Reinstall PyYAML to fix metadata that may have been corrupted by --ignore-installed
+# Use exact version required by Isaac-GR00T
+RUN pip install --force-reinstall --no-cache-dir pyyaml==6.0.2
+
+WORKDIR /workspace
+
+# Copy only the policy runner module and configuration scaffold.
+COPY policy_runner /workspace/policy_runner
+COPY configs/policy_runner.yaml /workspace/configs/policy_runner.yaml
+COPY docker/policy_runner_entrypoint.sh /workspace/entrypoint.sh
+RUN chmod +x /workspace/entrypoint.sh
+
+ENV PYTHONPATH=/workspace
+
+ENTRYPOINT ["/workspace/entrypoint.sh"]

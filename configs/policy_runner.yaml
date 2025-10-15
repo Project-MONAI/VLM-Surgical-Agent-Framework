@@ -1,0 +1,58 @@
+# YAML configuration for the GR00T N1.5 policy runner.
+#
+# NOTE: Example values are provided for reference.
+# calibration_dir example: /home/nigel/.cache/huggingface/lerobot/calibration/robots/so101_follower
+# port example: /dev/ttyACM0
+# ckpt_path example: /media/m3/models/i4h_groot_so_arm
+# index_or_path example: /dev/video0
+
+ckpt_path: "__REQUIRED__:<ckpt_path>"
+task_description: "Grip the scissors and put it into the tray"
+data_config: "so100_dualcam"
+embodiment_tag: "new_embodiment"
+chunk_length: 16
+trt: false
+trt_engine_path: ""
+policy_device: null
+
+control:
+  endpoint: "tcp://*:5556"
+
+robot:
+  type: "so101_follower"
+  port: "__REQUIRED__:<port>"
+  id: "so101_follower_arm"
+  calibration_dir: "__REQUIRED__:<calibration_dir>"
+  max_relative_target: null
+  use_degrees: false
+  fps: 30.0
+  cameras:
+    room:
+      type: "opencv"
+      index_or_path: "__REQUIRED__:<index_or_path>"
+      width: 640
+      height: 480
+      fps: 30
+    wrist:
+      type: "opencv"
+      index_or_path: "__REQUIRED__:<index_or_path>"
+      width: 640
+      height: 480
+      fps: 30
+
+room_key: "video.room"
+wrist_key: "video.wrist"
+
+camera:
+  width: 640
+  height: 480
+
+prealign:
+  steps: 20
+  pause: 0.1
+
+skip_prealign: false
+actions_to_apply: 12
+skip_calibration: true
+keep_torque_enabled: false
+verbose: true
