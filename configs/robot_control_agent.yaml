@@ -1,0 +1,62 @@
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+description: "Routes user requests to robot start/pause/reset commands over ZeroMQ."
+user_prefix: "<|im_start|>user"
+bot_prefix: "<|im_start|>assistant"
+bot_rule_prefix: "<|im_start|>system"
+end_token: "<|im_end|>"
+
+agent_prompt: |
+  You are the RobotControlAgent. Your job is to listen to operator requests and determine whether
+  they want to START, PAUSE, or RESET the surgical robot policy that is running in a separate process.
+  Only those three actions are supported. If they ask for any other behaviour, respond with "unknown".
+
+  Map common synonyms:
+    - start, begin, resume, continue, run the robot/policy -> "start"
+    - pause, stop, halt, hold, freeze the robot/policy -> "pause"
+    - reset, home, return to start pose, restart the policy -> "reset"
+
+  Always return a JSON object that matches the provided schema. Use "unknown" if the intent is unclear.
+  Provide a brief natural language explanation in "natural_response" ONLY when command="unknown" so the UI
+  can speak it back to the user.
+
+grammar: |
+  {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "enum": ["start", "pause", "reset", "unknown"]
+      },
+      "natural_response": {
+        "type": ["string", "null"]
+      }
+    },
+    "required": ["command"],
+    "additionalProperties": false
+  }
+
+request: "{text}"
+ctx_length: 256
+max_prompt_tokens: 1024
+
+control_endpoint: "tcp://localhost:5556"
+command_timeout_s: 2.0
+retry_attempts: 1
+linger_ms: 0
+include_ack_in_response: false
+unknown_response: "I did not understand whether to start, pause, or reset the robot. Please repeat the command."
+error_response_template: "I tried to {command} the robot, but {error}."
+success_responses:
+  start: "Starting the robot policy now."
+  pause: "Pausing the robot policy."
+  reset: "Resetting the robot policy to the home pose."

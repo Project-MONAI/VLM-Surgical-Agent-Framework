@@ -61,3 +61,6 @@ tts-service/models/
 
 # Annotation files
 annotations/
+
+# Policy runner
+policy_runner/third_party/

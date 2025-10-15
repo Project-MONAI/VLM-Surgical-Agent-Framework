@@ -29,6 +29,15 @@ export PATH="$HOME/.local/bin:$PATH"
 ARCH=$(uname -m)
 echo -e "${BLUE}🔍 Detected architecture: $ARCH${NC}"
 
+POLICY_IMAGE="vlm-surgical-agents:policy-runner"
+POLICY_CONTAINER="vlm-surgical-policy"
+POLICY_CONFIG_PATH="${REPO_PATH}/configs/policy_runner.yaml"
+POLICY_RUNNER_ROBOT_PORT=""
+POLICY_RUNNER_CKPT_PATH=""
+POLICY_RUNNER_CKPT_DIR=""
+POLICY_RUNNER_CAMERA_DEVICES=()
+POLICY_RUNNER_CALIBRATION_DIR=""
+
 # Set vLLM image based on architecture
 if [[ "$ARCH" == "x86_64" ]]; then
     VLLM_IMAGE="vllm/vllm-openai:latest"
@@ -235,6 +244,198 @@ build_tts() {
     echo -e "${GREEN}✅ TTS build completed${NC}"
 }
 
+build_policy_runner() {
+    echo -e "\n${BLUE}🔨 Building Policy Runner...${NC}"
+    docker build -t ${POLICY_IMAGE} -f "$REPO_PATH/docker/Dockerfile.policy_runner" "$REPO_PATH"
+    echo -e "${GREEN}✅ Policy Runner build completed${NC}"
+}
+
+validate_policy_config() {
+    local config_path="${1:-$POLICY_CONFIG_PATH}"
+
+    if [ ! -f "$config_path" ]; then
+        echo -e "${RED}❌ Policy runner config not found at $config_path${NC}"
+        return 1
+    fi
+
+    local python_output
+    if ! python_output=$(
+        python3 - "$config_path" "$REPO_PATH" 2>&1 <<'PY'
+import sys
+from pathlib import Path
+
+try:
+    import yaml
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "PyYAML is required to validate the policy runner config. Install it with 'pip install pyyaml'."
+    ) from exc
+
+
+config_path = Path(sys.argv[1]).expanduser()
+repo_path = Path(sys.argv[2]).expanduser()
+
+if not config_path.is_file():
+    raise FileNotFoundError(f"Config file '{config_path}' does not exist.")
+
+with config_path.open("r", encoding="utf-8") as fh:
+    config = yaml.safe_load(fh)
+
+if config is None:
+    raise ValueError(f"Config file '{config_path}' is empty.")
+
+def check_for_placeholders(node, path="root"):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            check_for_placeholders(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        for idx, value in enumerate(node):
+            check_for_placeholders(value, f"{path}[{idx}]")
+    elif isinstance(node, str):
+        if "__REQUIRED__" in node:
+            raise ValueError(f"Config value at {path} contains placeholder '__REQUIRED__'.")
+
+check_for_placeholders(config)
+
+ckpt_path = Path(config.get("ckpt_path", "")).expanduser()
+if not ckpt_path.is_absolute():
+    ckpt_path = (repo_path / ckpt_path).resolve()
+
+robot_cfg = config.get("robot") or {}
+robot_port = robot_cfg.get("port")
+if not robot_port:
+    raise ValueError("robot.port must be set in the policy config.")
+
+if not ckpt_path.exists():
+    raise FileNotFoundError(f"Checkpoint '{ckpt_path}' does not exist.")
+
+# Extract camera device paths
+camera_devices = []
+cameras_cfg = robot_cfg.get("cameras", {})
+for cam_name, cam_cfg in cameras_cfg.items():
+    if isinstance(cam_cfg, dict):
+        index_or_path = cam_cfg.get("index_or_path")
+        if index_or_path and isinstance(index_or_path, str) and index_or_path.startswith("/dev/"):
+            camera_devices.append(index_or_path)
+
+# Extract calibration directory
+calibration_dir = robot_cfg.get("calibration_dir")
+if calibration_dir:
+    calibration_dir = Path(calibration_dir).expanduser()
+
+print(f"robot_port={robot_port}")
+print(f"ckpt_path={ckpt_path}")
+print(f"ckpt_dir={ckpt_path.parent}")
+for cam_dev in camera_devices:
+    print(f"camera_device={cam_dev}")
+if calibration_dir:
+    print(f"calibration_dir={calibration_dir}")
+PY
+    ); then
+        echo -e "${RED}❌ Policy runner config validation failed:${NC}"
+        echo "$python_output"
+        return 1
+    fi
+
+    POLICY_RUNNER_ROBOT_PORT=""
+    POLICY_RUNNER_CKPT_PATH=""
+    POLICY_RUNNER_CKPT_DIR=""
+    POLICY_RUNNER_CAMERA_DEVICES=()
+    POLICY_RUNNER_CALIBRATION_DIR=""
+
+    while IFS= read -r line; do
+        case "$line" in
+            robot_port=*)
+                POLICY_RUNNER_ROBOT_PORT="${line#robot_port=}"
+                ;;
+            ckpt_path=*)
+                POLICY_RUNNER_CKPT_PATH="${line#ckpt_path=}"
+                ;;
+            ckpt_dir=*)
+                POLICY_RUNNER_CKPT_DIR="${line#ckpt_dir=}"
+                ;;
+            camera_device=*)
+                POLICY_RUNNER_CAMERA_DEVICES+=("${line#camera_device=}")
+                ;;
+            calibration_dir=*)
+                POLICY_RUNNER_CALIBRATION_DIR="${line#calibration_dir=}"
+                ;;
+        esac
+    done <<< "$python_output"
+
+    if [ -z "$POLICY_RUNNER_ROBOT_PORT" ]; then
+        echo -e "${RED}❌ Unable to determine robot port from policy config${NC}"
+        return 1
+    fi
+
+    if [ -z "$POLICY_RUNNER_CKPT_PATH" ]; then
+        echo -e "${RED}❌ Unable to determine checkpoint path from policy config${NC}"
+        return 1
+    fi
+
+    if [ -z "$POLICY_RUNNER_CKPT_DIR" ]; then
+        POLICY_RUNNER_CKPT_DIR=$(dirname "$POLICY_RUNNER_CKPT_PATH")
+    fi
+
+    echo -e "${GREEN}✅ Policy runner config validated${NC}"
+    return 0
+}
+
+run_policy_runner() {
+    echo -e "\n${BLUE}🚀 Starting Policy Runner...${NC}"
+    if ! validate_policy_config "$POLICY_CONFIG_PATH"; then
+        return 1
+    fi
+
+    local docker_cmd=(
+        docker run -d
+        --name "${POLICY_CONTAINER}"
+        --net host
+        --gpus all
+        -v "${REPO_PATH}:${REPO_PATH}"
+        -v "${POLICY_CONFIG_PATH}:/workspace/configs/policy_runner.yaml:ro"
+        -e POLICY_RUNNER_CONFIG=/workspace/configs/policy_runner.yaml
+    )
+
+
+
+    if [ -n "$POLICY_RUNNER_ROBOT_PORT" ]; then
+        docker_cmd+=(--device "${POLICY_RUNNER_ROBOT_PORT}:${POLICY_RUNNER_ROBOT_PORT}")
+    fi
+
+    # Add camera devices
+    for cam_device in "${POLICY_RUNNER_CAMERA_DEVICES[@]}"; do
+        if [ -e "$cam_device" ]; then
+            docker_cmd+=(--device "${cam_device}:${cam_device}")
+        else
+            echo -e "${YELLOW}⚠️  Warning: Camera device ${cam_device} not found${NC}"
+        fi
+    done
+
+    if [ -n "$POLICY_RUNNER_CKPT_DIR" ]; then
+        docker_cmd+=(-v "${POLICY_RUNNER_CKPT_DIR}:${POLICY_RUNNER_CKPT_DIR}:ro")
+    fi
+
+    # Mount calibration directory if specified in config
+    if [ -n "$POLICY_RUNNER_CALIBRATION_DIR" ]; then
+        local host_calibration_dir="$POLICY_RUNNER_CALIBRATION_DIR"
+        # Transform /home/<username>/ to /root/ for container path
+        local container_calibration_dir=$(echo "$host_calibration_dir" | sed -E 's|^/home/[^/]+/|/root/|')
+        
+        if [ -d "$host_calibration_dir" ]; then
+            docker_cmd+=(-v "${host_calibration_dir}:${container_calibration_dir}:ro")
+            echo -e "${GREEN}✅ Mounting calibration directory: ${host_calibration_dir} -> ${container_calibration_dir}${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Warning: Calibration directory not found at ${host_calibration_dir}${NC}"
+        fi
+    fi
+
+    docker_cmd+=("${POLICY_IMAGE}")
+
+    "${docker_cmd[@]}"
+    echo -e "${GREEN}✅ Policy Runner started${NC}"
+}
+
 # Function to stop containers
 stop_containers() {
     local component="$1"
@@ -253,8 +454,11 @@ stop_containers() {
         tts)
             containers="vlm-surgical-tts"
             ;;
+        policy)
+            containers="${POLICY_CONTAINER}"
+            ;;
         *)
-            containers="vlm-surgical-vllm vlm-surgical-whisper vlm-surgical-ui vlm-surgical-tts"
+            containers="vlm-surgical-vllm vlm-surgical-whisper vlm-surgical-ui vlm-surgical-tts ${POLICY_CONTAINER}"
             ;;
     esac
 
@@ -422,6 +626,16 @@ show_status() {
         else
             echo -e "${RED}❌ TTS Server:${NC} Not found"
         fi
+
+        # Check Policy runner status
+        local policy_status=$(docker ps --filter "name=${POLICY_CONTAINER}" --format "{{.Status}}" 2>/dev/null)
+        if [[ "$policy_status" =~ ^Up ]]; then
+            echo -e "${GREEN}✅ Policy Runner:${NC} Uses config ${POLICY_CONFIG_PATH} - $policy_status"
+        elif [ -n "$policy_status" ]; then
+            echo -e "${YELLOW}⚠️  Policy Runner:${NC} $policy_status"
+        else
+            echo -e "${RED}❌ Policy Runner:${NC} Not found"
+        fi
     fi
 
     echo -e "\n${YELLOW}📝 Useful commands:${NC}"
@@ -466,6 +680,14 @@ show_logs() {
                 echo "TTS container not found"
             fi
             ;;
+        policy)
+            echo -e "${BLUE}📋 Policy Runner Logs:${NC}"
+            if docker ps -a --filter "name=${POLICY_CONTAINER}" --format "{{.Names}}" | grep -q "${POLICY_CONTAINER}"; then
+                docker logs ${POLICY_CONTAINER} --tail 50
+            else
+                echo "Policy runner container not found"
+            fi
+            ;;
         *)
             echo -e "${BLUE}📋 All Container Logs:${NC}"
             echo -e "${BLUE}--- vLLM Logs ---${NC}"
@@ -492,6 +714,12 @@ show_logs() {
             else
                 echo "TTS container not found"
             fi
+            echo -e "\n${BLUE}--- Policy Runner Logs ---${NC}"
+            if docker ps -a --filter "name=${POLICY_CONTAINER}" --format "{{.Names}}" | grep -q "${POLICY_CONTAINER}"; then
+                docker logs ${POLICY_CONTAINER} --tail 30 | head -20
+            else
+                echo "Policy runner container not found"
+            fi
             ;;
     esac
 }
@@ -514,11 +742,15 @@ handle_build() {
         tts)
             build_tts
             ;;
+        policy)
+            build_policy_runner
+            ;;
         *)
             build_vllm
             build_whisper
             build_ui
             build_tts
+            build_policy_runner
             echo -e "\n${GREEN}✅ All images built successfully!${NC}"
             ;;
     esac
@@ -546,6 +778,10 @@ handle_run() {
             stop_containers "tts"
             run_tts
             ;;
+        policy)
+            stop_containers "policy"
+            run_policy_runner
+            ;;
         *)
             stop_containers
             run_vllm
@@ -555,6 +791,8 @@ handle_run() {
             run_tts
             sleep 2
             run_ui
+            sleep 2
+            run_policy_runner
             show_status
             ;;
     esac
@@ -590,11 +828,18 @@ handle_build_and_run() {
             run_tts
             echo -e "${GREEN}✅ TTS built and started${NC}"
             ;;
+        policy)
+            build_policy_runner
+            stop_containers "policy"
+            run_policy_runner
+            echo -e "${GREEN}✅ Policy runner built and started${NC}"
+            ;;
         *)
             build_vllm
             build_whisper
             build_ui
             build_tts
+            build_policy_runner
             stop_containers
             run_vllm
             sleep 5
@@ -603,6 +848,8 @@ handle_build_and_run() {
             run_tts
             sleep 2
             run_ui
+            sleep 2
+            run_policy_runner
             show_status
             ;;
     esac
@@ -627,6 +874,7 @@ show_help() {
     echo -e "  whisper        Whisper server only"
     echo -e "  ui             UI server only"
     echo -e "  tts            TTS server only"
+    echo -e "  policy         Policy runner only"
     echo -e "  (no component) All components (default)"
     echo -e ""
     echo -e "${YELLOW}Examples:${NC}"
@@ -639,6 +887,7 @@ show_help() {
     echo -e "  $0 build whisper        # Build only Whisper server"
     echo -e "  $0 build ui             # Build only UI server"
     echo -e "  $0 build tts            # Build only TTS server"
+    echo -e "  $0 build policy         # Build only Policy runner"
     echo -e ""
     echo -e "${BLUE}  Run Commands:${NC}"
     echo -e "  $0 run                  # Run all components"
@@ -646,6 +895,7 @@ show_help() {
     echo -e "  $0 run whisper          # Run only Whisper server"
     echo -e "  $0 run ui               # Run only UI server"
     echo -e "  $0 run tts              # Run only TTS server"
+    echo -e "  $0 run policy           # Run only Policy runner"
     echo -e ""
     echo -e "${BLUE}  Build and Run Commands:${NC}"
     echo -e "  $0 build_and_run        # Build and run all components"
@@ -653,6 +903,7 @@ show_help() {
     echo -e "  $0 build_and_run whisper # Build and run only Whisper server"
     echo -e "  $0 build_and_run ui     # Build and run only UI server"
     echo -e "  $0 build_and_run tts    # Build and run only TTS server"
+    echo -e "  $0 build_and_run policy # Build and run only Policy runner"
     echo -e ""
     echo -e "${BLUE}  Stop Commands:${NC}"
     echo -e "  $0 stop                 # Stop all containers"
@@ -660,6 +911,7 @@ show_help() {
     echo -e "  $0 stop whisper         # Stop only Whisper server"
     echo -e "  $0 stop ui              # Stop only UI server"
     echo -e "  $0 stop tts             # Stop only TTS server"
+    echo -e "  $0 stop policy          # Stop only Policy runner"
     echo -e ""
     echo -e "${BLUE}  Logs Commands:${NC}"
     echo -e "  $0 logs                 # Show logs for all containers"
@@ -667,6 +919,7 @@ show_help() {
     echo -e "  $0 logs whisper         # Show Whisper server logs"
     echo -e "  $0 logs ui              # Show UI server logs"
     echo -e "  $0 logs tts             # Show TTS server logs"
+    echo -e "  $0 logs policy          # Show Policy runner logs"
     echo -e ""
     echo -e "${BLUE}  Download Command:${NC}"
     echo -e "  $0 download             # Download surgical LLM model"

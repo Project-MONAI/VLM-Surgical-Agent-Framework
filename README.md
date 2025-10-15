@@ -8,6 +8,7 @@ The Surgical Agentic Framework Demo is a multimodal agentic AI framework tailore
     *   NotetakerAgent to record specific notes,
     *   AnnotationAgent to automatically annotate progress in the background,
     *   PostOpNoteAgent to summarize all data into a final post-operative note.
+* **Robot Control Agent**: Real-world robot control via the GR00T N1.5 policy runner for executing scrub nurse tasks.
 * **Text-to-Speech**: The system can speak back the AI's response if you enable TTS. There are options for local TTS models (Coqui), as well as an ElevenLabs API.
 * **Computer Vision** or multimodal features are supported via a finetuned VLM (Vision Language Model), launched by vLLM.
 * **Video Upload and Processing**: Support for uploading and analyzing surgical videos.
@@ -22,10 +23,12 @@ The Surgical Agentic Framework Demo is a multimodal agentic AI framework tailore
 3. SelectorAgent: Receives text from the UI, corrects it (if needed), decides whether to direct it to:
     * ChatAgent (general Q&A about the procedure)
     * NotetakerAgent (records a note with timestamp + optional image frame)
+    * RobotControlAgent (executes real-world robot manipulation tasks via the GR00T N1.5 policy runner)
     * In the background, AnnotationAgent is also generating structured "annotations" every 10 seconds.
 4. NotetakerAgent: If chosen, logs the note in a JSON file.
 5. AnnotationAgent: Runs automatically, storing procedure annotations in ```procedure_..._annotations.json```.
-6. PostOpNoteAgent (optional final step): Summarizes the entire procedure, reading from both the annotation JSON and the notetaker JSON, producing a final structured post-op note.
+6. RobotControlAgent: Runs policy inference on hardware, controlling physical robots for scrub nurse tasks.
+7. PostOpNoteAgent (optional final step): Summarizes the entire procedure, reading from both the annotation JSON and the notetaker JSON, producing a final structured post-op note.
 
 ## System Requirements
 
@@ -138,6 +141,12 @@ cd docker
 ```
 
 This will automatically download models, build all necessary containers, and start the services. See [docker/README.md](docker/README.md) for detailed Docker deployment instructions.
+
+## Robot Control and Policy Runner
+
+The framework includes support for real-world robot control via the GR00T N1.5 policy runner. This enables physical surgical robots to execute manipulation tasks guided by vision-language models.
+
+For setup instructions, configuration details, and hardware requirements, see [policy_runner/README.md](policy_runner/README.md).
 
 ## Running the Surgical Agentic Framework Demo
 
