@@ -29,6 +29,16 @@ export PATH="$HOME/.local/bin:$PATH"
 ARCH=$(uname -m)
 echo -e "${BLUE}🔍 Detected architecture: $ARCH${NC}"
 
+# Detect if running on IGX Thor
+IS_IGX_THOR=false
+if [ -f /proc/device-tree/model ]; then
+    DEVICE_MODEL=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0')
+    if [[ "$DEVICE_MODEL" =~ "Thor" ]] || [[ "$DEVICE_MODEL" =~ "IGX" ]]; then
+        IS_IGX_THOR=true
+        echo -e "${BLUE}🔍 Detected IGX Thor device${NC}"
+    fi
+fi
+
 POLICY_IMAGE="vlm-surgical-agents:policy-runner"
 POLICY_CONTAINER="vlm-surgical-policy"
 POLICY_CONFIG_PATH="${REPO_PATH}/configs/policy_runner.yaml"
@@ -38,10 +48,13 @@ POLICY_RUNNER_CKPT_DIR=""
 POLICY_RUNNER_CAMERA_DEVICES=()
 POLICY_RUNNER_CALIBRATION_DIR=""
 
-# Set vLLM image based on architecture
+# Set vLLM image based on architecture and platform
 if [[ "$ARCH" == "x86_64" ]]; then
     VLLM_IMAGE="vllm/vllm-openai:latest"
     echo -e "${BLUE}💡 Using official vLLM image for x86_64: $VLLM_IMAGE${NC}"
+elif [[ "$IS_IGX_THOR" == true ]]; then
+    VLLM_IMAGE="nvcr.io/nvidia/vllm:25.11-py3"
+    echo -e "${BLUE}💡 Using NVIDIA NGC vLLM image for IGX Thor: $VLLM_IMAGE${NC}"
 elif [[ "$ARCH" == "aarch64" ]]; then
     VLLM_IMAGE="vlm-surgical-agents:vllm-openai-v0.8.3-dgpu"
     echo -e "${BLUE}💡 Will build custom vLLM image for aarch64: $VLLM_IMAGE${NC}"
@@ -176,6 +189,10 @@ build_vllm() {
 
     if [[ "$ARCH" == "x86_64" ]]; then
         echo -e "${YELLOW}📥 Pulling official vLLM image for x86_64...${NC}"
+        docker pull $VLLM_IMAGE
+        echo -e "${GREEN}✅ vLLM image ready${NC}"
+    elif [[ "$IS_IGX_THOR" == true ]]; then
+        echo -e "${YELLOW}📥 Pulling NVIDIA NGC vLLM image for IGX Thor...${NC}"
         docker pull $VLLM_IMAGE
         echo -e "${GREEN}✅ vLLM image ready${NC}"
     else
@@ -494,9 +511,23 @@ run_vllm() {
     # Get model name following precedence: ENV > global.yaml > default
     local model_name=$(get_model_name)
     echo -e "${BLUE}💡 Using model: $model_name${NC}"
+
+    # Convert host path to container path
+    # If model_name starts with "models/", convert it to container path
+    local container_model_path="$model_name"
+    if [[ "$model_name" == models/* ]]; then
+        # Remove leading "models/" and prepend container mount path
+        container_model_path="/vllm-workspace/models/${model_name#models/}"
+    elif [[ "$model_name" != /* ]]; then
+        # If it's a relative path but doesn't start with "models/", assume it's relative to models dir
+        container_model_path="/vllm-workspace/models/$model_name"
+    fi
+    echo -e "${BLUE}💡 Container model path: $container_model_path${NC}"
+
     local served_model_name=$(get_served_model_name)
     echo -e "${BLUE}💡 Using served model: $served_model_name${NC}"
 
+    # Run docker command with conditional parameters based on platform
     docker run -d \
         --name vlm-surgical-vllm \
         --net host \
@@ -506,15 +537,15 @@ run_vllm() {
         -e VLLM_URL \
         --restart unless-stopped \
         $VLLM_IMAGE \
-        --model $model_name \
+        $( [[ "$IS_IGX_THOR" == true ]] && echo "vllm serve $container_model_path" || echo "--model $model_name" ) \
         --served-model-name surgical-vlm \
         --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION} \
-        ${ENFORCE_EAGER_FLAG} \
+        $( [[ "$IS_IGX_THOR" != true ]] && echo "${ENFORCE_EAGER_FLAG}" ) \
         --max-model-len 4096 \
         --max-num-seqs 8 \
         --disable-mm-preprocessor-cache \
-        --load-format bitsandbytes \
-        --quantization bitsandbytes \
+        $( [[ "$IS_IGX_THOR" != true ]] && echo "--load-format bitsandbytes" ) \
+        $( [[ "$IS_IGX_THOR" != true ]] && echo "--quantization bitsandbytes" ) \
         $( [[ -n "${served_model_name}" ]] && echo --served-model-name "${served_model_name}" )
     echo -e "${GREEN}✅ vLLM Server started${NC}"
 }
