@@ -27,6 +27,117 @@ The Surgical Agentic Framework Demo is a multimodal agentic AI framework tailore
 5. AnnotationAgent: Runs automatically, storing procedure annotations in ```procedure_..._annotations.json```.
 6. PostOpNoteAgent (optional final step): Summarizes the entire procedure, reading from both the annotation JSON and the notetaker JSON, producing a final structured post-op note.
 
+
+## Dynamic Agent System
+
+The framework now uses a **dynamic agent loading system** that automatically discovers and loads agents from configuration files:
+
+### Adding New Agents
+
+To add a new agent to the system:
+
+1. **Create the agent class** in `agents/your_agent.py`:
+```python
+from agents.base_agent import Agent
+
+class YourAgent(Agent):
+    def __init__(self, settings_path, response_handler):
+        super().__init__(settings_path, response_handler)
+
+    def process_request(self, text, chat_history):
+        # Your agent logic here
+        return {"name": "YourAgent", "response": "..."}
+```
+
+2. **Create the configuration file** in `configs/your_agent.yaml`:
+```yaml
+agent_metadata:
+  name: "YourAgent"
+  class_name: "YourAgent"
+  module: "agents.your_agent"
+  enabled: true
+  category: "analysis"  # conversational, analysis, control, etc.
+  priority: 10
+  requires_llm: true
+  requires_visual: false
+  dependencies: []
+  lifecycle: "singleton"  # or "background" for continuous agents
+
+description: "Your agent's purpose"
+agent_prompt: |
+  Your agent's system prompt
+
+ctx_length: 512
+max_prompt_tokens: 3000
+```
+
+3. **Restart the application** - your agent will be automatically discovered and loaded!
+
+The agent will be:
+- Automatically registered with the selector agent
+- Available for user queries
+- Properly initialized with all required dependencies
+
+### Agent Configuration Reference
+
+- **name**: Unique identifier for the agent instance
+- **class_name**: Python class name to instantiate
+- **module**: Python module path (e.g., `agents.your_agent`)
+- **enabled**: Set to `false` to disable without deleting
+- **category**: Used for grouping and filtering agents
+- **priority**: Lower numbers = higher priority for routing
+- **requires_llm**: Whether agent needs LLM access
+- **requires_visual**: Whether agent processes images/video
+- **dependencies**: External services the agent needs (frame queues, callbacks, etc.)
+- **lifecycle**: `singleton` (one instance) or `background` (continuous operation)
+
+### Plugin Directories (External Agents)
+
+You can also load agents from external directories (e.g., custom workflows or proprietary agents):
+
+**Expected Structure:**
+```
+~/my-custom-agents/
+├── agents/
+│   └── my_agent.py        # Python agent file
+└── configs/
+    └── my_agent.yaml      # Agent configuration
+```
+
+**Configuration:**
+
+You can specify plugin directories in two ways.
+
+1. **Via global.yaml** (located at `configs/global.yaml` in the root):
+```yaml
+plugin_directories:
+  - /home/user/my-custom-agents
+  - ./local-plugins
+```
+
+Note that the system reads only from a single `configs/global.yaml` file in the root of this repository - you do **not** need a `global.yaml` in your plugin folder.
+
+2. **Via environment variable**:
+```bash
+export AGENT_PLUGIN_DIRS="/home/user/my-custom-agents:/path/to/other-agents"
+```
+
+**Behavior:**
+- Plugin agents are loaded after core agents
+- If a plugin agent has the same name as a core agent, **the plugin version overrides it**
+- Only loads agents that have both `.py` and `.yaml` files with matching names
+- Invalid plugin directories are logged but don't stop the system
+
+**Example Use Case:**
+```bash
+# Load custom workflow agents
+export AGENT_PLUGIN_DIRS="~/pr3/i4h-workflows-internal/workflows/surgical_Agents"
+./scripts/start_app.sh
+```
+
+The system will automatically discover and load agents from the plugin directory!
+
+
 ## System Requirements
 
 * Python 3.12 or higher
@@ -35,7 +146,7 @@ The Surgical Agentic Framework Demo is a multimodal agentic AI framework tailore
 * Microphone for voice input (optional)
 * 16GB+ VRAM recommended
 
-## Installation 
+## Installation
 
 1. Clone or Download this repository:
 
@@ -117,7 +228,7 @@ If you want to adapt the framework to a different procedure (e.g., appendectomy,
   - Training (LoRA/QLoRA) and validation
   - Exporting and serving with vLLM, and updating configs
 
-6. Setup: 
+6. Setup:
 
 * Edit ```scripts/start_app.sh``` if you need to change ports.
 * Edit ```scripts/run_vllm_server.sh``` if you need to change quantization or VRAM utilization (4bit requires ~10GB VRAM). Model selection is controlled via `configs/global.yaml`.
@@ -210,7 +321,7 @@ The framework supports two video source modes:
 
 ### Uploaded Videos
 1. Click on the "Upload Video" button to add your own surgical videos
-2. Browse the video library by clicking "Video Library" 
+2. Browse the video library by clicking "Video Library"
 3. Select a video to analyze
 4. Use the chat interface to ask questions about the video or create annotations
 
@@ -338,10 +449,13 @@ surgical_agentic_framework/
 │   ├── annotation_agent.py
 │   ├── base_agent.py
 │   ├── chat_agent.py
+│   ├── dynamic_selector_agent.py  <-- Dynamic agent routing
 │   ├── ehr_agent.py
 │   ├── notetaker_agent.py
+│   ├── operating_room_agent.py
 │   ├── post_op_note_agent.py
-│   └── selector_agent.py
+│   ├── robot_control_agent.py
+│   └── selector_agent.py (legacy)
 ├── ehr/                    <-- Retrieval components for EHR
 │   ├── builder.py          <-- Builds FAISS index from text/JSON
 │   └── store.py            <-- Loads/queries the index
@@ -368,6 +482,7 @@ surgical_agentic_framework/
 │   ├── web_server.py       <-- Web interface server
 │   └── whisper_online_server.py <-- Whisper ASR server
 ├── utils/                  <-- Utility classes and functions
+│   ├── agent_registry.py   <-- Dynamic agent discovery and loading
 │   ├── chat_history.py
 │   ├── logging_utils.py
 │   └── response_handler.py

@@ -9,6 +9,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Agent metadata for dynamic loading
+agent_metadata:
+  name: "PostOpNoteAgent"  # Unique identifier for this agent instance
+  class_name: "PostOpNoteAgent"
+  module: "agents.post_op_note_agent"
+  enabled: true
+  category: "analysis"
+  priority: 90
+  requires_llm: true
+  requires_visual: false
+  dependencies: []
+  lifecycle: "singleton"
+
 agent_name: "PostOpNoteAgent"
 description: "Generates a post-operative note from annotation data + notetaker notes."
 

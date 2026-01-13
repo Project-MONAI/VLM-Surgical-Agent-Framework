@@ -22,8 +22,8 @@ class NotetakerAgent(Agent):
     happening in surgery.
     """
 
-    def __init__(self, config_path, response_handler=None, agent_key=None, procedure_start_str=None):
-        super().__init__(config_path, response_handler, agent_key=agent_key)
+    def __init__(self, settings_path, response_handler=None, agent_key=None, procedure_start_str=None):
+        super().__init__(settings_path, response_handler, agent_key=agent_key)
         self._logger = logging.getLogger(__name__)
 
         # Overwrite the LLM wait with a no-op, as we don't need an LLM here

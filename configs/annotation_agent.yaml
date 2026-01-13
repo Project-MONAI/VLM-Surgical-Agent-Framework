@@ -9,6 +9,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Agent metadata for dynamic loading
+agent_metadata:
+  name: "AnnotationAgent"  # Unique identifier for this agent instance
+  class_name: "AnnotationAgent"
+  module: "agents.annotation_agent"
+  enabled: true
+  category: "background"
+  priority: 100
+  requires_llm: true
+  requires_visual: true
+  dependencies:
+    - type: "frame_queue"
+      name: "frame_queue"
+    - type: "on_annotation_callback"
+      name: "on_annotation_callback"
+  lifecycle: "background"
+
 agent_name: "AnnotationAgent"
 description: "Generates structured annotations in the background every xs."
 

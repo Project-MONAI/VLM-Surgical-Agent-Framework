@@ -9,6 +9,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Agent metadata for dynamic loading
+agent_metadata:
+  name: "NotetakerAgent"  # Unique identifier for this agent instance
+  class_name: "NotetakerAgent"
+  module: "agents.notetaker_agent"
+  enabled: true
+  category: "data_collection"
+  priority: 20
+  requires_llm: false
+  requires_visual: true
+  dependencies: []
+  lifecycle: "background"
+
 agent_name: "NotetakerAgent"
 description: "Stores short notes about the procedure with timestamp and image."
 
