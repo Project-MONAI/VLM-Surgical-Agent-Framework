@@ -95,6 +95,19 @@ async def main():
     os.makedirs(os.path.join(os.path.dirname(__file__), 'uploaded_videos'), exist_ok=True)
 
     # ============================================================================
+    # AGENT MESSAGE BUS: Standardized Inter-Agent Communication
+    # ============================================================================
+
+    logger.info("=" * 80)
+    logger.info("Initializing Agent Message Bus")
+    logger.info("=" * 80)
+
+    from utils.agent_message_bus import AgentMessageBus
+
+    message_bus = AgentMessageBus(web_server=web, message_history_size=1000)
+    logger.info("✓ Agent Message Bus created")
+
+    # ============================================================================
     # AGENT REGISTRY: Dynamic Agent Discovery and Loading
     # ============================================================================
 
@@ -110,6 +123,12 @@ async def main():
 
     # Register dependency resolvers for agent instantiation
     logger.info("Registering dependency resolvers...")
+
+    # Register message bus
+    registry.register_dependency_resolver("message_bus", lambda: message_bus)
+    logger.info("✓ Message bus registered as dependency")
+
+    # Register frame queues
     registry.register_dependency_resolver("frame_queue", lambda: web.frame_queue)
 
     # Define annotation callback
@@ -194,6 +213,16 @@ async def main():
     # Print registry statistics
     stats = registry.get_statistics()
     logger.info(f"Registry Statistics: {stats}")
+
+    # Print message bus statistics
+    bus_stats = message_bus.get_statistics()
+    logger.info("=" * 80)
+    logger.info("Message Bus Statistics:")
+    logger.info(f"  Registered Agents: {bus_stats['registered_agents']}")
+    logger.info(f"  Pending Requests: {bus_stats['pending_requests']}")
+    logger.info(f"  Active Workflows: {bus_stats['active_workflows']}")
+    logger.info(f"  Message History: {bus_stats['total_messages']}")
+    logger.info("=" * 80)
 
     # ============================================================================
     # SELECTOR AGENT: Create dynamic selector with registry reference
