@@ -29,8 +29,8 @@ class SurgeryAnnotation(BaseModel):
     elapsed_time_seconds: Optional[float] = None
 
 class AnnotationAgent(Agent):
-    def __init__(self, settings_path, response_handler, frame_queue, agent_key=None, procedure_start_str=None, on_annotation_callback=None):
-        super().__init__(settings_path, response_handler, agent_key=agent_key)
+    def __init__(self, settings_path, response_handler, frame_queue, agent_key=None, message_bus=None, procedure_start_str=None, on_annotation_callback=None):
+        super().__init__(settings_path, response_handler, agent_key=agent_key, message_bus=message_bus)
         self._logger = logging.getLogger(__name__)
         self.frame_queue = frame_queue
         self.time_step = self.agent_settings.get("time_step_seconds", 10)
@@ -106,6 +106,20 @@ class AnnotationAgent(Agent):
                             self._logger.error(f"Failed to write annotation to file: {e}")
 
                         # Notify that a new annotation was generated
+
+                        # Publish annotation event via message bus
+                        if self.message_bus:
+                            try:
+                                self.message_bus.publish_event(
+                                    sender_agent=self.agent_name,
+                                    event_type="annotation_created",
+                                    payload=annotation
+                                )
+                                self._logger.debug("Published annotation_created event via message bus")
+                            except Exception as e:
+                                self._logger.error(f"Error publishing annotation event: {e}", exc_info=True)
+
+                        # Legacy callback support (backward compatibility)
                         if hasattr(self, 'on_annotation_callback') and self.on_annotation_callback:
                             try:
                                 self.on_annotation_callback(annotation)

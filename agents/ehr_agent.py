@@ -17,8 +17,8 @@ class EHRAgent(Agent):
       - agent_prompt: system prompt instructions
     """
 
-    def __init__(self, settings_path, response_handler):
-        super().__init__(settings_path, response_handler)
+    def __init__(self, settings_path, response_handler, message_bus=None):
+        super().__init__(settings_path, response_handler, message_bus=message_bus)
         self._logger = logging.getLogger(__name__)
 
         self.index_dir: str = self.agent_settings.get("ehr_index_dir", "ehr_index")

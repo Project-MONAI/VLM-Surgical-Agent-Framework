@@ -20,10 +20,14 @@ agent_metadata:
   requires_llm: true
   requires_visual: true
   dependencies:
+    - type: "message_bus"
+      name: "message_bus"
     - type: "frame_queue"
       name: "frame_queue"
     - type: "on_annotation_callback"
       name: "on_annotation_callback"
+  publishes_events:
+    - "annotation_created"
   lifecycle: "background"
 
 agent_name: "AnnotationAgent"

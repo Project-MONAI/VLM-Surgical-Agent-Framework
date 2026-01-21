@@ -225,6 +225,55 @@ async def main():
     logger.info("=" * 80)
 
     # ============================================================================
+    # MESSAGE BUS EVENT SUBSCRIPTIONS: Auto-subscribe to agent alert events
+    # ============================================================================
+
+    def forward_alert_to_ui(message):
+        """Forward alert events from message bus to UI via WebSocket."""
+        try:
+            payload_data = message.payload
+            alert_message = payload_data.get("description", "Alert from system")
+            source = payload_data.get("source", message.sender_agent)
+
+            logger.info(f"{source.capitalize()} alert forwarded to UI: {alert_message}")
+
+            # Prepare base message payload
+            ui_message = {
+                "agent_response": alert_message,
+                "agent_name": "AI Assistant",
+            }
+
+            # Pass through any UI-specific flags from the agent's payload
+            # This allows agents to control how their alerts are displayed
+            if "operating_room_annotation" in payload_data:
+                ui_message["operating_room_annotation"] = payload_data["operating_room_annotation"]
+            if "surgical_annotation" in payload_data:
+                ui_message["surgical_annotation"] = payload_data["surgical_annotation"]
+
+            # Send to chat UI
+            web.send_message(ui_message)
+        except Exception as e:
+            logger.error(f"Error forwarding alert to UI: {e}", exc_info=True)
+
+    # Auto-subscribe to all alert events published by agents
+    # Any event ending with "_alert" will be forwarded to the UI
+    alert_events_registered = 0
+    for agent_name in agent_names:
+        metadata = registry.get_metadata(agent_name)
+        if metadata and metadata.publishes_events:
+            for event_name in metadata.publishes_events:
+                if event_name.endswith("_alert"):
+                    message_bus.subscribe_to_event(event_name, forward_alert_to_ui)
+                    logger.info(f"  ✓ Subscribed to alert: {event_name} (from {agent_name})")
+                    alert_events_registered += 1
+
+    if alert_events_registered > 0:
+        logger.info(f"✓ Registered {alert_events_registered} alert event subscriptions for UI forwarding")
+    else:
+        logger.info("✓ No alert events found in agent metadata")
+
+
+    # ============================================================================
     # SELECTOR AGENT: Create dynamic selector with registry reference
     # ============================================================================
 

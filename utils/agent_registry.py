@@ -47,6 +47,8 @@ class AgentMetadata:
     dependencies: List[Dict[str, Any]] = field(default_factory=list)
     lifecycle: str = "singleton"  # singleton, per_request, background
     description: str = ""
+    subscribes_to_events: List[str] = field(default_factory=list)
+    publishes_events: List[str] = field(default_factory=list)
 
 
 class AgentRegistry:
@@ -345,6 +347,8 @@ class AgentRegistry:
             dependencies=metadata_dict.get('dependencies', []),
             lifecycle=metadata_dict.get('lifecycle', 'singleton'),
             description=metadata_dict.get('description', config.get('description', '')),
+            subscribes_to_events=metadata_dict.get('subscribes_to_events', []),
+            publishes_events=metadata_dict.get('publishes_events', []),
         )
 
         if not metadata.name or not metadata.module:

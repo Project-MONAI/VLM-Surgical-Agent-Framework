@@ -19,8 +19,8 @@ class ChatAgent(Agent):
     A general chat agent that can optionally handle images 
     """
 
-    def __init__(self, settings_path, response_handler):
-        super().__init__(settings_path, response_handler)
+    def __init__(self, settings_path, response_handler, message_bus=None):
+        super().__init__(settings_path, response_handler, message_bus=message_bus)
 
     def process_request(self, text, chat_history, visual_info=None):
         """

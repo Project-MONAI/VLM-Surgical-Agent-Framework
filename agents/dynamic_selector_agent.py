@@ -29,8 +29,8 @@ class DynamicSelectorAgent(Agent):
     Automatically updates its selection options based on the agent registry.
     """
 
-    def __init__(self, settings_path, response_handler, agent_registry=None):
-        super().__init__(settings_path, response_handler)
+    def __init__(self, settings_path, response_handler, agent_registry=None, message_bus=None):
+        super().__init__(settings_path, response_handler, message_bus=message_bus)
         self._logger = logging.getLogger(__name__)
         self.agent_registry = agent_registry
 
