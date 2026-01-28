@@ -18,8 +18,8 @@ from datetime import datetime
 from .base_agent import Agent
 
 class PostOpNoteAgent(Agent):
-    def __init__(self, settings_path, response_handler=None, agent_key=None):
-        super().__init__(settings_path, response_handler, agent_key=agent_key)
+    def __init__(self, settings_path, response_handler=None, agent_key=None, message_bus=None):
+        super().__init__(settings_path, response_handler, agent_key=agent_key, message_bus=message_bus)
         self._logger = logging.getLogger(__name__)
         self.chunk_size = self.agent_settings.get("chunk_size", 20)
 

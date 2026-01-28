@@ -29,11 +29,14 @@ class SurgeryAnnotation(BaseModel):
     elapsed_time_seconds: Optional[float] = None
 
 class AnnotationAgent(Agent):
-    def __init__(self, settings_path, response_handler, frame_queue, agent_key=None, procedure_start_str=None):
-        super().__init__(settings_path, response_handler, agent_key=agent_key)
+    def __init__(self, settings_path, response_handler, frame_queue, agent_key=None, message_bus=None, procedure_start_str=None, on_annotation_callback=None):
+        super().__init__(settings_path, response_handler, agent_key=agent_key, message_bus=message_bus)
         self._logger = logging.getLogger(__name__)
-        self.frame_queue = frame_queue  
+        self.frame_queue = frame_queue
         self.time_step = self.agent_settings.get("time_step_seconds", 10)
+
+        # Initialize callback (can be set later if not provided at construction)
+        self.on_annotation_callback = on_annotation_callback
 
         if procedure_start_str is None:
             procedure_start_str = time.strftime("%Y_%m_%d__%H_%M_%S", time.localtime())
@@ -61,13 +64,13 @@ class AnnotationAgent(Agent):
         video_loaded = False
         consecutive_errors = 0
         max_consecutive_errors = 5
-        
+
         while not self.stop_event.is_set():
             try:
                 # Attempt to get image data from the frame queue.
                 try:
                     frame_data = self.frame_queue.get_nowait()
-                    
+
                     # If we get here, we have a frame, so video is loaded
                     video_loaded = True
                     consecutive_errors = 0  # Reset error counter on successful frame fetch
@@ -84,13 +87,13 @@ class AnnotationAgent(Agent):
                         consecutive_errors = 0  # Reset after pause
                     time.sleep(self.time_step)
                     continue
-                
+
                 # Check frame data validity
                 if not frame_data or not isinstance(frame_data, str) or len(frame_data) < 1000:
                     self._logger.warning("Invalid frame data received")
                     time.sleep(self.time_step)
                     continue
-                    
+
                 # Only proceed with annotation if we've confirmed video is loaded
                 if video_loaded:
                     annotation = self._generate_annotation(frame_data)
@@ -98,16 +101,35 @@ class AnnotationAgent(Agent):
                         self.annotations.append(annotation)
                         try:
                             self.append_json_to_file(annotation, self.annotation_filepath)
-                            self._logger.debug(f"New annotation appended to file {self.annotation_filepath}")
+                            self._logger.info(f"✓ Generated annotation: phase={annotation.get('surgical_phase', 'unknown')}, tools={annotation.get('tools', [])}")
                         except Exception as e:
                             self._logger.error(f"Failed to write annotation to file: {e}")
-                            
+
                         # Notify that a new annotation was generated
+
+                        # Publish annotation event via message bus
+                        if self.message_bus:
+                            try:
+                                self.message_bus.publish_event(
+                                    sender_agent=self.agent_name,
+                                    event_type="annotation_created",
+                                    payload=annotation
+                                )
+                                self._logger.debug("Published annotation_created event via message bus")
+                            except Exception as e:
+                                self._logger.error(f"Error publishing annotation event: {e}", exc_info=True)
+
+                        # Legacy callback support (backward compatibility)
                         if hasattr(self, 'on_annotation_callback') and self.on_annotation_callback:
                             try:
                                 self.on_annotation_callback(annotation)
+                                self._logger.debug(f"Annotation callback executed successfully")
                             except Exception as callback_error:
                                 self._logger.error(f"Error in annotation callback: {callback_error}")
+                        else:
+                            self._logger.warning(f"No annotation callback set - annotations won't be sent to UI")
+                    else:
+                        self._logger.warning(f"Annotation generation returned None/empty result")
             except Exception as e:
                 self._logger.error(f"Error in annotation background loop: {e}", exc_info=True)
                 consecutive_errors += 1
@@ -115,7 +137,7 @@ class AnnotationAgent(Agent):
                     self._logger.critical(f"Too many consecutive errors in background loop ({consecutive_errors}). Pausing for 30 seconds.")
                     time.sleep(30)
                     consecutive_errors = 0
-            
+
             # Sleep between annotation attempts
             time.sleep(self.time_step)
 
@@ -134,7 +156,7 @@ class AnnotationAgent(Agent):
             "If nothing is visible for tools or anatomy, use ['none'] for that field."
         )
         messages.append({"role": "user", "content": user_content})
-        
+
         # Create a fallback annotation in case of errors
         fallback_annotation = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
@@ -144,18 +166,18 @@ class AnnotationAgent(Agent):
             "surgical_phase": "preparation",  # Default to preparation phase
             "description": "Unable to analyze the current frame due to a processing error."
         }
-        
+
         # First, check if the frame data is valid
         if not frame_data or len(frame_data) < 1000:  # Arbitrary minimum length for valid image data
             self._logger.warning("Invalid or empty frame data received")
             return None
-            
+
         try:
             # Try to get a response from the model with retries, using JSON Schema via response_format
             max_retries = 2
             retry_count = 0
             raw_json_str = None
-            
+
             while retry_count <= max_retries and raw_json_str is None:
                 try:
                     raw_json_str = self.stream_image_response(
@@ -172,11 +194,11 @@ class AnnotationAgent(Agent):
                         self._logger.error(f"All annotation attempts failed: {e}")
                         return fallback_annotation
                     time.sleep(1)  # Wait before retry
-            
+
             if not raw_json_str:
                 self._logger.warning("Empty response from model")
                 return fallback_annotation
-                
+
             self._logger.debug(f"Raw annotation response: {raw_json_str}")
 
             # Robust parsing and normalization to handle model drift

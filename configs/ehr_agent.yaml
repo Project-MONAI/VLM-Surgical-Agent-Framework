@@ -1,3 +1,16 @@
+# Agent metadata for dynamic loading
+agent_metadata:
+  name: "EHRAgent"  # Unique identifier for this agent instance
+  class_name: "EHRAgent"
+  module: "agents.ehr_agent"
+  enabled: true
+  category: "data_retrieval"
+  priority: 30
+  requires_llm: true
+  requires_visual: false
+  dependencies: []
+  lifecycle: "singleton"
+
 description: "EHR QA agent using retrieval-augmented generation over a vector store."
 user_prefix: "<|im_start|>user"
 bot_prefix: "<|im_start|>assistant"

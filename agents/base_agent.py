@@ -17,6 +17,8 @@ import logging
 import yaml
 import time
 import tiktoken
+import queue
+import threading
 from threading import Lock
 from typing import Any, List, Sequence
 import base64
@@ -33,8 +35,8 @@ class Agent(ABC):
     """
 
     _llm_lock = Lock()
-    
-    def __init__(self, settings_path, response_handler, agent_key=None):
+
+    def __init__(self, settings_path, response_handler, agent_key=None, message_bus=None):
         self._logger = logging.getLogger(f"{__name__}.{type(self).__name__}")
 
         self.load_settings(settings_path, agent_key=agent_key)
@@ -44,6 +46,17 @@ class Agent(ABC):
         self.client = OpenAI(api_key="EMPTY", base_url=self.llm_url)
 
         self._wait_for_server()
+
+        # Message bus integration
+        self.message_bus = message_bus
+        self.agent_name = type(self).__name__
+        self.message_queue = None
+        self._message_listener_thread = None
+
+        if self.message_bus:
+            self.message_queue = self.message_bus.register_agent(self.agent_name)
+            self._start_message_listener()
+            self._logger.info(f"{self.agent_name} registered with message bus")
 
     def load_settings(self, settings_path, agent_key=None):
         """
@@ -176,7 +189,7 @@ class Agent(ABC):
                     self._logger.debug(f"Waiting for vLLM server (attempt {attempts+1}/{timeout}): {e}")
             time.sleep(1)
             attempts += 1
-        
+
         # More helpful error message
         raise ConnectionError(
             f"⚠️ Unable to connect to vLLM server at {self.llm_url} after {timeout} seconds.\n"
@@ -480,3 +493,54 @@ class Agent(ABC):
                     json.dump(data, f, indent=2)
         except Exception as e:
             self._logger.error(f"append_json_to_file error: {e}", exc_info=True)
+
+    # ========================================================================
+    # MESSAGE BUS INTEGRATION
+    # ========================================================================
+
+    def _start_message_listener(self):
+        """Start background thread to listen for messages from message bus"""
+        def message_listener():
+            self._logger.debug(f"{self.agent_name} message listener starting...")
+            while True:
+                try:
+                    message = self.message_queue.get(timeout=1)
+                    self._handle_incoming_message(message)
+                except queue.Empty:
+                    continue
+                except Exception as e:
+                    self._logger.error(f"Error in message listener: {e}", exc_info=True)
+
+        self._message_listener_thread = threading.Thread(
+            target=message_listener,
+            daemon=True,
+            name=f"{self.agent_name}_MessageListener"
+        )
+        self._message_listener_thread.start()
+        self._logger.info(f"{self.agent_name} message listener started")
+
+    def _handle_incoming_message(self, message):
+        """
+        Handle incoming messages from message bus.
+        Default behavior: call handle_{action} method if it exists.
+        Override in subclasses for custom message handling.
+
+        Args:
+            message: AgentMessage object from message bus
+        """
+        handler_name = f"handle_{message.action}"
+
+        if hasattr(self, handler_name):
+            handler = getattr(self, handler_name)
+            try:
+                self._logger.debug(f"Handling message: {message.action} from {message.sender_agent}")
+                handler(message)
+            except Exception as e:
+                self._logger.error(
+                    f"Error handling {message.action} from {message.sender_agent}: {e}",
+                    exc_info=True
+                )
+        else:
+            self._logger.debug(
+                f"No handler for action '{message.action}' (would need method '{handler_name}')"
+            )

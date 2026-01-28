@@ -9,6 +9,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Agent metadata for dynamic loading
+agent_metadata:
+  name: "ChatAgent"  # Unique identifier for this agent instance
+  class_name: "ChatAgent"
+  module: "agents.chat_agent"
+  enabled: true
+  category: "conversational"
+  priority: 10
+  requires_llm: true
+  requires_visual: true
+  dependencies: []
+  lifecycle: "singleton"
+
 description: "This agent is used to respond to general queries about the ongoing surgical scenario."
 user_prefix: "<|im_start|>user"
 bot_prefix: "<|im_start|>assistant"

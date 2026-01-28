@@ -20,8 +20,8 @@ class SelectorOutput(BaseModel):
     selection: Literal["ChatAgent", "NotetakerAgent", "PostOpNoteAgent", "EHRAgent"]
 
 class SelectorAgent(Agent):
-    def __init__(self, settings_path, response_handler):
-        super().__init__(settings_path, response_handler)
+    def __init__(self, settings_path, response_handler, message_bus=None):
+        super().__init__(settings_path, response_handler, message_bus=message_bus)
         self._logger = logging.getLogger(__name__)
 
     def process_request(self, text, chat_history):

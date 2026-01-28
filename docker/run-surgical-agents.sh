@@ -307,7 +307,6 @@ run_vllm() {
         ${ENFORCE_EAGER_FLAG} \
         --max-model-len 4096 \
         --max-num-seqs 8 \
-        --disable-mm-preprocessor-cache \
         --load-format bitsandbytes \
         --quantization bitsandbytes \
         $( [[ -n "${served_model_name}" ]] && echo --served-model-name "${served_model_name}" )
@@ -329,15 +328,114 @@ run_whisper() {
 }
 
 # Function to run UI server
+# Function to detect and add plugin directory mounts to docker args array
+add_plugin_mounts() {
+    local -n args_array=$1  # nameref to the array
+    local plugin_dirs=()
+
+    # 1. Check environment variable AGENT_PLUGIN_DIRS (colon-separated)
+    if [ -n "$AGENT_PLUGIN_DIRS" ]; then
+        echo -e "${BLUE}📦 Detected AGENT_PLUGIN_DIRS environment variable${NC}"
+        IFS=':' read -ra ENV_DIRS <<< "$AGENT_PLUGIN_DIRS"
+        for dir in "${ENV_DIRS[@]}"; do
+            # Expand ~ to home directory
+            dir="${dir/#\~/$HOME}"
+            if [ -d "$dir" ]; then
+                plugin_dirs+=("$dir")
+                echo -e "${GREEN}  ✓ Found plugin directory: $dir${NC}"
+            else
+                echo -e "${YELLOW}  ⚠ Plugin directory not found: $dir${NC}"
+            fi
+        done
+    fi
+
+    # 2. Check global.yaml for plugin_directories
+    local global_yaml="${REPO_PATH}/configs/global.yaml"
+    if [ -f "$global_yaml" ]; then
+        # Parse YAML to extract plugin_directories (simple grep-based parsing)
+        local in_plugin_section=false
+        while IFS= read -r line; do
+            # Check if we're in the plugin_directories section
+            if [[ "$line" =~ ^plugin_directories: ]]; then
+                in_plugin_section=true
+                continue
+            fi
+
+            # If we're in the section and line starts with "  -", it's a plugin dir
+            if [ "$in_plugin_section" = true ]; then
+                if [[ "$line" =~ ^[[:space:]]+-[[:space:]](.+)$ ]]; then
+                    local dir="${BASH_REMATCH[1]}"
+                    # Remove quotes if present
+                    dir="${dir%\"}"
+                    dir="${dir#\"}"
+                    dir="${dir%\'}"
+                    dir="${dir#\'}"
+                    # Expand ~ to home directory
+                    dir="${dir/#\~/$HOME}"
+                    # Make absolute path
+                    if [[ ! "$dir" = /* ]]; then
+                        dir="${REPO_PATH}/$dir"
+                    fi
+                    if [ -d "$dir" ] && [[ ! " ${plugin_dirs[@]} " =~ " ${dir} " ]]; then
+                        plugin_dirs+=("$dir")
+                        echo -e "${GREEN}  ✓ Found plugin directory from global.yaml: $dir${NC}"
+                    elif [ ! -d "$dir" ]; then
+                        echo -e "${YELLOW}  ⚠ Plugin directory from global.yaml not found: $dir${NC}"
+                    fi
+                elif [[ ! "$line" =~ ^[[:space:]]+-  ]]; then
+                    # We've left the plugin_directories section
+                    in_plugin_section=false
+                fi
+            fi
+        done < "$global_yaml"
+    fi
+
+    # 3. Add volume mounts for each plugin directory
+    local mount_idx=0
+    local container_dirs=""
+    for dir in "${plugin_dirs[@]}"; do
+        local mount_point="/app/plugin_$mount_idx"
+        args_array+=("-v" "${dir}:${mount_point}:ro")
+
+        # Build container dirs string
+        if [ -n "$container_dirs" ]; then
+            container_dirs="${container_dirs}:"
+        fi
+        container_dirs="${container_dirs}${mount_point}"
+
+        mount_idx=$((mount_idx + 1))
+        echo -e "${BLUE}  📌 Mounting: $dir → $mount_point${NC}"
+    done
+
+    # 4. Add AGENT_PLUGIN_DIRS environment variable if we have plugins
+    if [ ${#plugin_dirs[@]} -gt 0 ]; then
+        args_array+=("-e" "AGENT_PLUGIN_DIRS=${container_dirs}")
+        echo -e "${GREEN}  ✅ Plugin directories will be accessible in container${NC}"
+    fi
+}
+
 run_ui() {
     echo -e "\n${BLUE}🚀 Starting UI Server...${NC}"
-    docker run -d \
-        --name vlm-surgical-ui \
-        --net host \
-        -e VLLM_MODEL_NAME \
-        -e VLLM_URL \
-        --restart unless-stopped \
-        vlm-surgical-agents:ui
+
+    # Build docker command as array for proper argument handling
+    local docker_args=(
+        "run" "-d"
+        "--name" "vlm-surgical-ui"
+        "--net" "host"
+        "-e" "VLLM_MODEL_NAME=${VLLM_MODEL_NAME}"
+        "-e" "VLLM_URL=${VLLM_URL}"
+    )
+
+    # Add plugin directory mounts
+    add_plugin_mounts docker_args
+
+    docker_args+=(
+        "--restart" "unless-stopped"
+        "vlm-surgical-agents:ui"
+    )
+
+    # Execute docker command
+    docker "${docker_args[@]}"
     echo -e "${GREEN}✅ UI Server started${NC}"
 }
 

@@ -5,3 +5,10 @@ personnel:
   surgeon: "Dr. Alice"
   assistant: "Mr. Scrub Tech"
   anaesthetist: "Dr. Bob"
+
+# Plugin directories for external agents
+# Agents from plugins will OVERRIDE core agents if names match
+plugin_directories: []
+  # Example:
+  # - /home/user/custom-agents
+  # - ./plugins
