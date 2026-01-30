@@ -350,6 +350,9 @@ document.addEventListener('DOMContentLoaded', function() {
       // Start auto frame capture for live stream
       startAutoFrameCapture();
 
+      // Enable the microphone button for live stream
+      enableMicButton();
+
     } catch (error) {
       console.error('Failed to connect to WebRTC stream:', error);
       updateWebRTCStatus(`Error: ${error.message}`, 'error');
@@ -393,6 +396,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Stop auto frame capture
     stopAutoFrameCapture();
+
+    // Disable mic button only if there's no uploaded video playing
+    const hasUploadedVideo = videoElement && videoElement.src && videoElement.src.trim() !== '';
+    if (!hasUploadedVideo) {
+      disableMicButton();
+    }
 
     console.log('Disconnected from WebRTC stream');
   }
@@ -1928,7 +1937,7 @@ function toggleMic() {
 
   // Check if button is disabled
   if (micBtn.disabled) {
-    showToast('Please load a video before using the microphone', 'error');
+    showToast('Please load a video or connect to a live stream before using the microphone', 'error');
     return;
   }
 
@@ -1966,6 +1975,16 @@ function enableMicButton() {
     micBtn.disabled = false;
     micBtn.classList.remove('opacity-50', 'cursor-not-allowed');
     console.log('Microphone button enabled');
+  }
+}
+
+// Function to disable the mic button when no video is available
+function disableMicButton() {
+  const micBtn = document.getElementById('mic-btn');
+  if (micBtn) {
+    micBtn.disabled = true;
+    micBtn.classList.add('opacity-50', 'cursor-not-allowed');
+    console.log('Microphone button disabled');
   }
 }
 
