@@ -9,6 +9,85 @@ function generateUniqueId() {
   return 'session-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
 }
 
+// Global video source configuration (must be in global scope for frame capture to access)
+let videoSourceConfig = null;
+let currentVideoSourceMode = 'surgical';  // Default fallback
+let isWebRTCConnected = false;
+
+// Fetch video source configuration from backend
+let videoConfigPromise = null;  // Promise to track loading state
+async function loadVideoSourceConfig() {
+  try {
+    const response = await fetch('/api/video_sources');
+    if (response.ok) {
+      videoSourceConfig = await response.json();
+      currentVideoSourceMode = videoSourceConfig.default_source || 'surgical';
+      console.log('Video source configuration loaded:', videoSourceConfig);
+    } else {
+      console.warn('Failed to load video source configuration, using defaults');
+    }
+  } catch (error) {
+    console.error('Error loading video source configuration:', error);
+  }
+}
+
+// Helper function to create frame message payload with correct flags
+// Must be in global scope so startAutoFrameCapture can access it
+function createFrameMessagePayload(frameData) {
+  if (!videoSourceConfig || !videoSourceConfig.sources) {
+    // Fallback to defaults if configuration not loaded
+    console.warn('Video source config not loaded yet - using legacy format (auto_frame/frame_data)');
+    return {
+      auto_frame: true,
+      frame_data: frameData
+    };
+  }
+
+  // Determine which video source mode we're in based on source_type
+  let sourceMode = currentVideoSourceMode;
+  
+  // If WebRTC is connected, find the source with source_type='livestream'
+  if (isWebRTCConnected) {
+    // Find the source mode that has source_type='livestream'
+    for (const [mode, config] of Object.entries(videoSourceConfig.sources)) {
+      if (config.source_type === 'livestream') {
+        sourceMode = mode;
+        break;
+      }
+    }
+  } else {
+    // For uploaded videos, find the source with source_type='uploaded'
+    for (const [mode, config] of Object.entries(videoSourceConfig.sources)) {
+      if (config.source_type === 'uploaded') {
+        sourceMode = mode;
+        break;
+      }
+    }
+  }
+
+  // Get the configuration for this source mode
+  const sourceConf = videoSourceConfig.sources[sourceMode];
+  if (!sourceConf) {
+    console.warn(`No configuration found for source mode '${sourceMode}', using defaults`);
+    return {
+      auto_frame: true,
+      frame_data: frameData
+    };
+  }
+
+  // Build payload with correct flags from configuration
+  const payload = {};
+  payload[sourceConf.websocket_flag] = true;
+  payload[sourceConf.frame_data_key] = frameData;
+
+  console.log(`✓ Using source mode '${sourceMode}' (type: ${sourceConf.source_type || 'unknown'})`);
+  console.log(`  Flags: ${sourceConf.websocket_flag}=true, ${sourceConf.frame_data_key}=<frame>`);
+  return payload;
+}
+
+// Load configuration on page load (store promise for checking later)
+videoConfigPromise = loadVideoSourceConfig();
+
 // Panel Collapsible Functionality
 document.addEventListener('DOMContentLoaded', function() {
   // Initialize save note button
@@ -300,7 +379,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // WebRTC connection management
   let webrtcConnection = null;
-  let isWebRTCConnected = false;
 
   // WebRTC event handlers
   const connectWebRTCBtn = document.getElementById('connectWebRTCBtn');
@@ -2148,11 +2226,9 @@ function startAutoFrameCapture() {
 
     // Send to server for annotation
     if (typeof sendJSON === 'function') {
-      sendJSON({
-        auto_frame: true,
-        frame_data: initialFrame
-      });
-      console.log("Initial frame sent for annotation");
+      const payload = createFrameMessagePayload(initialFrame);
+      sendJSON(payload);
+      console.log("Initial frame sent for annotation:", payload);
     }
   } else {
     console.warn("Failed to capture initial frame - ChatBot responses may be limited");
@@ -2170,11 +2246,9 @@ function startAutoFrameCapture() {
 
       // Send frame to server with auto_frame flag for annotation
       if (typeof sendJSON === 'function') {
-        sendJSON({
-          auto_frame: true,
-          frame_data: frameData
-        });
-        console.log("Auto-captured frame sent for annotation");
+        const payload = createFrameMessagePayload(frameData);
+        sendJSON(payload);
+        console.log("Auto-captured frame sent for annotation:", payload);
       }
     } else {
       // We couldn't capture a frame on this interval
@@ -2184,11 +2258,9 @@ function startAutoFrameCapture() {
       const lastFrame = sessionStorage.getItem('lastCapturedFrame');
       if (lastFrame && typeof sendJSON === 'function') {
         updateCapturedFrameDisplay(lastFrame, 'Auto-capture failed - using previous', 'fallback');
-        sendJSON({
-          auto_frame: true,
-          frame_data: lastFrame
-        });
-        console.log("Using previously captured frame for annotation");
+        const payload = createFrameMessagePayload(lastFrame);
+        sendJSON(payload);
+        console.log("Using previously captured frame for annotation:", payload);
       }
     }
   }, FRAME_CAPTURE_INTERVAL);
