@@ -1,0 +1,177 @@
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Video Source Registry Configuration
+# ===================================
+#
+# This file defines all available video sources and their properties.
+# The system uses this configuration to dynamically manage multiple video
+# feeds without hardcoding logic for each source.
+#
+# Format Version: 1.0.0
+
+# Global Settings
+# ---------------
+settings:
+  # Default video source when system starts or falls back
+  default_source: "surgical"
+
+  # Enable automatic detection of video sources from WebSocket messages
+  auto_detect_enabled: true
+
+  # Allow frontend to manually switch between video sources
+  allow_manual_switching: true
+
+
+# Video Sources
+# -------------
+# Each video source represents a different camera/feed with its own:
+# - Selector agent configuration
+# - Frame queue for buffering frames
+# - Context identifier for agent understanding
+# - Auto-detection triggers
+
+video_sources:
+
+  # ============================================================================
+  # Surgical/Laparoscopic Camera Feed
+  # ============================================================================
+  surgical:
+    # Enable/disable this video source
+    enabled: true
+
+    # Human-readable name for UI display
+    display_name: "Surgical Camera"
+
+    # Detailed description
+    description: "Laparoscopic surgical camera feed showing the surgical procedure (MP4 video)"
+
+    # Source type - helps frontend determine which mode to use
+    source_type: "uploaded"  # or "livestream"
+
+    # Selector Configuration
+    # ----------------------
+    # Default selector config (fallback)
+    selector_config: "configs/selector.yaml"
+
+    # Pattern to find plugin-specific selector
+    # Searches in plugin directories for this file
+    plugin_selector_pattern: "configs/surgical_selector.yaml"
+
+    # Frame Handling
+    # --------------
+    # Name of the frame queue for this source
+    # The system will create: web_server.frame_queues['surgical']
+    frame_queue_name: "frame_queue"
+
+    # Context name used by agents to understand content type
+    # This is passed to agents in visual_info['feed']
+    context_name: "procedure"
+
+    # Auto-Detection
+    # --------------
+    # WebSocket message flags that indicate this source is active
+    auto_detect:
+      # Flag in WebSocket message that indicates this source
+      websocket_flag: "auto_frame"
+
+      # Key in WebSocket message containing frame data
+      frame_data_key: "frame_data"
+
+    # Priority
+    # --------
+    # Higher priority sources are checked first during auto-detection
+    # Also used as default preference if multiple sources available
+    priority: 10
+
+
+  # ============================================================================
+  # Operating Room Webcam Feed
+  # ============================================================================
+  operating_room:
+    enabled: true
+    display_name: "Operating Room Webcam"
+    description: "Operating room environment webcam showing staff, equipment, and room status (WebRTC stream)"
+
+    # Source type - helps frontend determine which mode to use
+    source_type: "livestream"  # or "uploaded"
+
+    selector_config: "configs/selector.yaml"
+    plugin_selector_pattern: "configs/operating_room_selector.yaml"
+
+    frame_queue_name: "operating_room_frame_queue"
+    context_name: "operating_room"
+
+    auto_detect:
+      websocket_flag: "operating_room_auto_frame"
+      frame_data_key: "operating_room_frame_data"
+
+    priority: 5
+
+
+  # ============================================================================
+  # Additional Video Source Example (Disabled by Default)
+  # ============================================================================
+  # This is an example showing how to define additional video sources.
+  # Copy and modify this template to add new feeds. See detailed guide below.
+  #
+  # example_source:
+  #   enabled: false
+  #   display_name: "Example Camera"
+  #   description: "Description of this video source"
+  #   selector_config: "configs/selector.yaml"
+  #   plugin_selector_pattern: "*/configs/*_example_selector.yaml"
+  #   frame_queue_name: "example_frame_queue"
+  #   context_name: "example"
+  #   auto_detect:
+  #     websocket_flag: "example_auto_frame"
+  #     frame_data_key: "example_frame_data"
+  #   priority: 3
+
+
+# ============================================================================
+# Adding a New Video Source
+# ============================================================================
+#
+# To add a new video source, copy one of the examples above and modify:
+#
+# 1. Choose a unique mode name (key under video_sources)
+# 2. Set enabled: true
+# 3. Provide display_name and description
+# 4. Define selector_config paths
+# 5. Choose a unique frame_queue_name
+# 6. Set context_name (what agents will see)
+# 7. Define auto_detect flags (WebSocket triggers)
+# 8. Set priority (higher = more important)
+#
+# Example for X-Ray feed:
+#
+#   xray:
+#     enabled: true
+#     display_name: "Intraoperative X-Ray"
+#     description: "Real-time fluoroscopy imaging"
+#     selector_config: "configs/selector.yaml"
+#     plugin_selector_pattern: "*/configs/*_xray_selector.yaml"
+#     frame_queue_name: "xray_frame_queue"
+#     context_name: "xray"
+#     auto_detect:
+#       websocket_flag: "xray_auto_frame"
+#       frame_data_key: "xray_frame_data"
+#     priority: 7
+#
+# That's it! No Python code changes needed.
+# The system will automatically:
+# - Create the frame queue
+# - Find/load the selector
+# - Route requests appropriately
+# - Enable auto-detection
+#
+# ============================================================================

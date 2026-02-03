@@ -173,17 +173,18 @@ class Agent(ABC):
             name = str(self.model_name).lower()
         return ("qwen" in name) and ("vl" in name)
 
-    def _wait_for_server(self, timeout=60):
+    def _wait_for_server(self, timeout=120):
+        """Increased timeout to 120 seconds to allow for slower vLLM startup"""
         attempts = 0
         check_url = f"{self.llm_url}/models"
         while attempts < timeout:
             try:
-                r = requests.get(check_url)
+                r = requests.get(check_url, timeout=5)
                 if r.status_code == 200:
                     self._logger.info(f"✅ Successfully connected to vLLM server at {self.llm_url}")
                     return
             except Exception as e:
-                if attempts % 5 == 0:  # Log less frequently to reduce clutter
+                if attempts % 10 == 0:  # Log less frequently to reduce clutter
                     self._logger.info(f"Waiting for vLLM server (attempt {attempts+1}/{timeout}): {e}")
                 else:
                     self._logger.debug(f"Waiting for vLLM server (attempt {attempts+1}/{timeout}): {e}")
@@ -354,8 +355,12 @@ class Agent(ABC):
                                     answer = c0.get("text", "")
             except Exception as e:
                 # Fallback to chat.completions (older path)
+                # Sanitize error message to avoid logging massive base64 images
+                error_msg = str(e)
+                if len(error_msg) > 500:
+                    error_msg = error_msg[:500] + "... (truncated)"
                 self._logger.warning(
-                    f"Responses API failed for multimodal: {e}. Falling back to chat.completions."
+                    f"Responses API failed for multimodal: {error_msg}. Falling back to chat.completions."
                 )
                 messages: list[dict[str, Any]] = []
                 if self.agent_prompt:

@@ -138,6 +138,145 @@ export AGENT_PLUGIN_DIRS="~/pr3/i4h-workflows-internal/workflows/surgical_Agents
 The system will automatically discover and load agents from the plugin directory!
 
 
+## Generic Video Source System
+
+The framework includes a **configuration-driven video source management system** that allows you to add and manage multiple video sources without modifying code.
+
+### Key Features
+
+- **Configuration-Driven**: Define video sources in YAML - no code changes needed
+- **Auto-Detection**: Automatically detect video source from WebSocket messages
+- **Dynamic Routing**: Generic selector lookup and context-aware frame fetching
+- **Multi-Source Support**: Handle unlimited video sources (surgical cameras, OR webcams, microscopes, etc.)
+- **Priority-Based**: Configure detection priority for multiple sources
+- **Plugin Compatible**: Works seamlessly with the plugin system
+
+### Quick Start
+
+The system is already configured with two default video sources:
+
+```yaml
+# configs/video_sources.yaml
+video_sources:
+  surgical:
+    enabled: true
+    display_name: "Surgical Camera"
+    context_name: "procedure"
+    source_type: "uploaded"
+    auto_detect:
+      websocket_flag: "auto_frame"
+      frame_data_key: "frame_data"
+    priority: 10
+
+  operating_room:
+    enabled: true
+    display_name: "Operating Room Webcam"
+    context_name: "operating_room"
+    source_type: "livestream"
+    auto_detect:
+      websocket_flag: "operating_room_auto_frame"
+      frame_data_key: "operating_room_frame_data"
+    priority: 5
+```
+
+### Adding a New Video Source
+
+To add a new video source (e.g., a surgical microscope):
+
+1. **Add to `configs/video_sources.yaml`**:
+
+```yaml
+microscope:
+  enabled: true
+  display_name: "Surgical Microscope"
+  description: "High-magnification microscope feed"
+  source_type: "livestream"
+  selector_config: "configs/selector.yaml"
+  plugin_selector_pattern: "configs/microscope_selector.yaml"
+  frame_queue_name: "microscope_frame_queue"
+  context_name: "microscope"
+  auto_detect:
+    websocket_flag: "microscope_auto_frame"
+    frame_data_key: "microscope_frame_data"
+  priority: 7
+```
+
+2. **(Optional) Create custom selector** at `configs/microscope_selector.yaml` if you need specialized routing
+
+3. **Restart the application** - that's it!
+
+The system automatically:
+- Creates the frame queue
+- Finds and loads the appropriate selector
+- Routes requests correctly
+- Enables auto-detection
+
+### Usage in Code
+
+The video source registry is automatically initialized and integrated:
+
+```python
+# Get selector for current mode
+video_mode = web.video_source_mode
+selector = video_source_registry.get_selector(video_mode)
+context = video_source_registry.get_context(video_mode)
+
+# Process with appropriate selector
+selected_agent_name, corrected_text, selector_context = selector.process_request(
+    user_text, chat_history.to_list()
+)
+
+# Fetch frame for current mode
+frame_data = _fetch_frame_for_mode(video_mode)
+```
+
+### Switching Video Sources
+
+**Auto-Detection** (recommended):
+The system automatically detects the video source based on WebSocket message flags configured in `video_sources.yaml`.
+
+**Manual Switching**:
+Send a WebSocket message from the frontend:
+
+```javascript
+socket.send(JSON.stringify({
+  video_source_mode: "microscope"
+}));
+```
+
+### Benefits
+
+✅ **Zero-code extension**: Add unlimited video sources via YAML only
+✅ **Auto-discovery**: Automatically finds configurations and selectors
+✅ **Flexible routing**: Each source can have its own specialized selector
+✅ **Context-aware**: Proper context management for multi-source scenarios
+✅ **Well-tested**: Comprehensive test suite included
+
+### Configuration Reference
+
+| Field | Description |
+|-------|-------------|
+| `enabled` | Enable/disable the source |
+| `display_name` | User-friendly name for UI |
+| `description` | Source description |
+| `source_type` | Type of source: `"uploaded"` for video files or `"livestream"` for WebRTC/live feeds |
+| `selector_config` | Path to base selector config |
+| `plugin_selector_pattern` | Path to plugin selector config |
+| `frame_queue_name` | Queue identifier for frames |
+| `context_name` | Context name for agent processing |
+| `auto_detect.websocket_flag` | WebSocket message flag for detection |
+| `auto_detect.frame_data_key` | Key for frame data in message |
+| `priority` | Detection priority (higher = checked first) |
+
+### Testing
+
+Run the comprehensive test suite:
+
+```bash
+python -m pytest tests/test_video_source_registry.py -v
+```
+
+
 ## System Requirements
 
 * Python 3.12 or higher
@@ -202,7 +341,7 @@ Download the default model from Hugging Face with Git LFS:
 # Download the checkpoint into the expected folder
 hf download nvidia/Qwen2.5-VL-7B-Surg-CholecT50 \
   --local-dir models/llm/Qwen2.5-VL-7B-Surg-CholecT50 \
-  --local-dir-use-symlinks False     
+  --local-dir-use-symlinks False
 ```
 
 * Serving engine
@@ -483,6 +622,7 @@ surgical_agentic_framework/
 │   └── whisper_online_server.py <-- Whisper ASR server
 ├── utils/                  <-- Utility classes and functions
 │   ├── agent_registry.py   <-- Dynamic agent discovery and loading
+│   ├── video_source_registry.py <-- Video source management system
 │   ├── chat_history.py
 │   ├── logging_utils.py
 │   └── response_handler.py

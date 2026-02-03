@@ -29,40 +29,74 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from websockets.sync.server import serve as websocket_serve
 from flask import request, jsonify, redirect, url_for
 from agents.post_op_note_agent import PostOpNoteAgent
+from utils.video_source_registry import VideoSourceRegistry
 
 class Webserver(threading.Thread):
     def __init__(self, web_server='0.0.0.0', web_port=8050, ws_port=49000,
                  audio_ws_port=49001, msg_callback=None):
         super().__init__(daemon=True)
+        self._logger = logging.getLogger(__name__)
         self.host = web_server
         self.port = web_port
         self.msg_callback = msg_callback
         self.audio_ws_port = audio_ws_port
-        self.frame_queue = queue.Queue()
-        
+
+        # Initialize Video Source Registry for dynamic multi-feed support
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'configs/video_sources.yaml')
+            self.video_source_registry = VideoSourceRegistry(config_path)
+            self._logger.info(f"✓ Video Source Registry initialized with {len(self.video_source_registry.get_all_modes())} sources")
+
+            # Dynamic frame queues - one per video source
+            self.frame_queues = {}
+            for mode in self.video_source_registry.get_all_modes():
+                queue_name = self.video_source_registry.get_frame_queue_name(mode)
+                self.frame_queues[mode] = queue.Queue()
+                self._logger.debug(f"  Created frame queue for '{mode}' source")
+
+            # Track current video source mode
+            self.video_source_mode = self.video_source_registry.get_default_mode()
+            self._logger.info(f"✓ Default video source: {self.video_source_mode}")
+
+            # Backward compatibility: Expose primary queue as frame_queue
+            self.frame_queue = self.frame_queues.get(self.video_source_mode, queue.Queue())
+
+        except FileNotFoundError:
+            self._logger.warning("video_sources.yaml not found - using legacy single-feed mode")
+            self.video_source_registry = None
+            self.frame_queue = queue.Queue()
+            self.frame_queues = {'default': self.frame_queue}
+            self.video_source_mode = 'default'
+        except Exception as e:
+            self._logger.error(f"Error initializing Video Source Registry: {e}", exc_info=True)
+            self._logger.warning("Falling back to legacy single-feed mode")
+            self.video_source_registry = None
+            self.frame_queue = queue.Queue()
+            self.frame_queues = {'default': self.frame_queue}
+            self.video_source_mode = 'default'
+
         # Create videos directory if it doesn't exist
         self.videos_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploaded_videos')
         os.makedirs(self.videos_dir, exist_ok=True)
-        
+
         # Current video path
         self.current_video_path = None
-        
-        # Store the most recent frame for follow-up questions
+
+        # Store the most recent frame for follow-up questions (per source)
         self.lastProcessedFrame = None
-        
+        self.lastProcessedFrames = {}  # Store frames per video source
+
         # Initialize the post-op note agent
         try:
-            post_op_note_settings = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
+            post_op_note_settings = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                                'configs/post_op_note_agent.yaml')
             self.post_op_note_agent = PostOpNoteAgent(post_op_note_settings)
-            self._logger = logging.getLogger(__name__)
             self._logger.info("Post-op note agent initialized successfully")
         except Exception as e:
-            self._logger = logging.getLogger(__name__)
             self._logger.error(f"Failed to initialize post-op note agent: {e}", exc_info=True)
             self.post_op_note_agent = None
 
-        self.app = flask.Flask(__name__, 
+        self.app = flask.Flask(__name__,
             template_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'web/templates'),
             static_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'web/static'))
         self.app.add_url_rule('/', view_func=self.on_index, methods=['GET'])
@@ -71,14 +105,15 @@ class Webserver(threading.Thread):
         self.app.add_url_rule('/api/videos', view_func=self.list_videos_route, methods=['GET'])
         self.app.add_url_rule('/api/select_video', view_func=self.select_video_route, methods=['POST'])
         self.app.add_url_rule('/api/generate_post_op_note', view_func=self.generate_post_op_note_route, methods=['POST'])
+        self.app.add_url_rule('/api/video_sources', view_func=self.video_sources_route, methods=['GET'])
         self.app.add_url_rule('/videos/<path:filename>', view_func=self.serve_video, methods=['GET'])
 
         # For text messages from WebSocket - make sure we listen on all interfaces
         self.ws_queue = queue.Queue()
         # Configure WebSocket with longer ping timeout and interval for more reliability
         self.ws_server = websocket_serve(
-            self.on_websocket, 
-            host='0.0.0.0', 
+            self.on_websocket,
+            host='0.0.0.0',
             port=ws_port,
             ping_interval=30,  # Send ping every 30 seconds (default is 20)
             ping_timeout=60,   # Wait 60 seconds for pong response (default is 20)
@@ -89,8 +124,8 @@ class Webserver(threading.Thread):
 
         # For single-chunk audio - make sure we listen on all interfaces
         self.audio_ws_server = websocket_serve(
-            self.on_audio_websocket, 
-            host='0.0.0.0', 
+            self.on_audio_websocket,
+            host='0.0.0.0',
             port=self.audio_ws_port,
             ping_interval=30,  # Send ping every 30 seconds
             ping_timeout=60    # Wait 60 seconds for pong response
@@ -116,7 +151,7 @@ class Webserver(threading.Thread):
         except Exception as e:
             self._logger.error(f"Error connecting to Whisper server: {e}")
             raise
-            
+
     def delayed_socket_recreation(self, delay=5):
         """Try to recreate the whisper socket after a delay"""
         time.sleep(delay)
@@ -135,53 +170,53 @@ class Webserver(threading.Thread):
             video_filename = os.path.basename(self.current_video_path)
             video_src = f'/videos/{video_filename}'
         return flask.render_template('index.html', video_src=video_src)
-        
+
     def serve_video(self, filename):
         """Serve uploaded videos"""
         return flask.send_from_directory(self.videos_dir, filename)
-        
+
     def upload_video_route(self):
         """Handle video upload"""
         if 'video' not in request.files:
             return jsonify({"error": "No video file uploaded"}), 400
-            
+
         video_file = request.files['video']
         if video_file.filename == '':
             return jsonify({"error": "No video file selected"}), 400
-        
+
         # Get original filename and extension
         original_filename = os.path.basename(video_file.filename)
         base_name, file_ext = os.path.splitext(original_filename)
-        
+
         # Create a safe filename (handle duplicates)
         final_filename = original_filename
         counter = 1
-        
+
         # Check if file exists, if so, add incremental suffix
         while os.path.exists(os.path.join(self.videos_dir, final_filename)):
             final_filename = f"{base_name}_{counter}{file_ext}"
             counter += 1
-        
+
         # Save the video file with the final name
         video_path = os.path.join(self.videos_dir, final_filename)
         video_file.save(video_path)
-        
+
         # Update current video path
         self.current_video_path = video_path
-        
+
         # Send message to client to update video source
         self.send_message({
             "video_updated": True,
             "video_src": f"/videos/{final_filename}"
         })
-        
+
         return jsonify({
             "success": True,
             "video_path": video_path,
             "video_src": f"/videos/{final_filename}",
             "filename": final_filename
         })
-        
+
     def list_videos_route(self):
         """List all uploaded videos"""
         videos = []
@@ -193,33 +228,61 @@ class Webserver(threading.Thread):
                     "size": os.path.getsize(os.path.join(self.videos_dir, filename)),
                     "modified": os.path.getmtime(os.path.join(self.videos_dir, filename))
                 })
-        
+
         # Sort by most recently modified
         videos.sort(key=lambda x: x["modified"], reverse=True)
-        
+
         return jsonify({"videos": videos})
-        
+
+    def video_sources_route(self):
+        """Get video source configurations for frontend"""
+        if not self.video_source_registry:
+            return jsonify({"error": "Video source registry not available"}), 500
+
+        try:
+            # Get all video source modes and their configurations
+            sources = {}
+            for mode in self.video_source_registry.get_all_modes():
+                source_info = self.video_source_registry.get_source_info(mode)
+                auto_detect_flags = self.video_source_registry.get_auto_detect_flags(mode)
+
+                sources[mode] = {
+                    "enabled": True,  # Only enabled sources are returned
+                    "websocket_flag": auto_detect_flags.get('websocket_flag'),
+                    "frame_data_key": auto_detect_flags.get('frame_data_key'),
+                    "display_name": source_info.display_name if source_info else mode.replace('_', ' ').title(),
+                    "source_type": source_info.source_type if source_info else None  # 'uploaded' or 'livestream'
+                }
+
+            return jsonify({
+                "default_source": self.video_source_registry.get_default_mode(),
+                "sources": sources
+            })
+        except Exception as e:
+            self._logger.error(f"Error getting video sources: {e}", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+
     def select_video_route(self):
         """Select a video from the uploaded videos"""
         data = request.json
         filename = data.get('filename')
-        
+
         if not filename:
             return jsonify({"error": "No filename provided"}), 400
-            
+
         video_path = os.path.join(self.videos_dir, filename)
         if not os.path.exists(video_path):
             return jsonify({"error": "Video file not found"}), 404
-            
+
         # Update current video path
         self.current_video_path = video_path
-        
+
         # Send message to client to update video source
         self.send_message({
             "video_updated": True,
             "video_src": f"/videos/{filename}"
         })
-        
+
         return jsonify({
             "success": True,
             "video_path": video_path,
@@ -260,22 +323,49 @@ class Webserver(threading.Thread):
                         if data.get('type') == 'heartbeat':
                             self._logger.debug("Received heartbeat from client")
                             continue
-                            
-                        # If auto_frame flag is present, push frame_data into the frame_queue
-                        if data.get('auto_frame') == True:
-                            frame_data = data.get('frame_data')
-                            if frame_data:
-                                self._logger.debug("Got auto_frame data from client.")
-                                self.frame_queue.put(frame_data)
-                                # Also store it for future use
-                                self.lastProcessedFrame = frame_data
-                            continue
-                        # Also check for 'frame_data' in non-auto messages
+
+                        # Auto-detect video source mode from WebSocket message
+                        detected_mode = None
+                        if self.video_source_registry:
+                            detected_mode = self.video_source_registry.detect_mode_from_message(data)
+                            if detected_mode:
+                                # Switch to detected mode
+                                if detected_mode != self.video_source_mode:
+                                    self._logger.info(f"Auto-detected video source switch: {self.video_source_mode} → {detected_mode}")
+                                    self.video_source_mode = detected_mode
+                                    # Update backward compatibility frame_queue reference
+                                    self.frame_queue = self.frame_queues.get(detected_mode, self.frame_queue)
+
+                                # Get frame data key for this source
+                                auto_detect_flags = self.video_source_registry.get_auto_detect_flags(detected_mode)
+                                frame_data_key = auto_detect_flags.get('frame_data_key', 'frame_data')
+                                frame_data = data.get(frame_data_key)
+
+                                if frame_data:
+                                    self._logger.debug(f"Got frame data for '{detected_mode}' source")
+                                    # Put frame in the appropriate queue
+                                    target_queue = self.frame_queues.get(detected_mode)
+                                    if target_queue:
+                                        target_queue.put(frame_data)
+                                    # Store for future use (per source)
+                                    self.lastProcessedFrames[detected_mode] = frame_data
+                                    self.lastProcessedFrame = frame_data  # Backward compatibility
+                                continue
+                        else:
+                            # Legacy mode: Fallback to hardcoded auto_frame check
+                            if data.get('auto_frame') == True:
+                                frame_data = data.get('frame_data')
+                                if frame_data:
+                                    self._logger.debug("Got auto_frame data from client (legacy mode).")
+                                    self.frame_queue.put(frame_data)
+                                    self.lastProcessedFrame = frame_data
+                                continue
+
+                        # Also check for 'frame_data' in non-auto messages (legacy support)
                         frame_data = data.pop('frame_data', None)
                         if frame_data:
-                            self._logger.debug("Got frame_data from client.")
+                            self._logger.debug("Got frame_data from client (legacy mode).")
                             self.frame_queue.put(frame_data)
-                            # Store the frame for future use
                             self.lastProcessedFrame = frame_data
                         if 'user_input' in data and self.msg_callback:
                             try:
@@ -366,18 +456,18 @@ class Webserver(threading.Thread):
                 websocket.close()
             except:
                 pass
-        
+
         if len(audio_data) > 0:
             try:
                 self._logger.debug(f"Forwarding final chunk of size {len(audio_data)} bytes to whisper server")
                 self.whisper_socket.sendall(audio_data)
                 self._logger.debug("Shutting down write side so Whisper sees EOF")
-                
+
                 try:
                     self.whisper_socket.shutdown(socket.SHUT_WR)
                     recognized_text = self.read_whisper_result()
                     self._logger.debug(f"Got recognized_text from whisper: {recognized_text}")
-                    
+
                     if recognized_text.strip():
                         self._logger.debug("Requesting a frame from browser for final transcript.")
                         # Also directly add the user message to the UI
@@ -391,13 +481,13 @@ class Webserver(threading.Thread):
                         self._logger.debug("No recognized text found from whisper.")
                 except Exception as e:
                     self._logger.error(f"Error processing whisper results: {e}", exc_info=True)
-                
+
                 self._logger.debug("Closing whisper socket entirely. Re-initializing for next time.")
                 try:
                     self.whisper_socket.close()
                 except Exception as e:
                     self._logger.error(f"Error closing whisper socket: {e}")
-                
+
                 try:
                     self.create_whisper_socket()
                 except Exception as e:
@@ -414,7 +504,7 @@ class Webserver(threading.Thread):
         try:
             # Set a timeout on the socket to avoid hanging indefinitely
             self.whisper_socket.settimeout(10.0)  # 10 seconds timeout
-            
+
             while True:
                 try:
                     chunk = self.whisper_socket.recv(1024)
@@ -427,22 +517,22 @@ class Webserver(threading.Thread):
                 except Exception as e:
                     self._logger.error(f"Error reading from whisper socket: {e}")
                     break
-                    
+
             # Reset timeout to default
             self.whisper_socket.settimeout(None)
-            
+
             lines = result_buffer.decode('utf-8', errors='replace').split('\n')
             recognized_text = ""
             for line in lines:
                 line = line.strip()
                 if line.startswith("0 0 "):
                     recognized_text = line[4:]
-                    
+
             return recognized_text
         except Exception as e:
             self._logger.error(f"Error processing whisper results: {e}", exc_info=True)
             return ""
-    
+
     def tts_route(self):
         data = request.json
         text = data.get('text', '').strip()
@@ -470,7 +560,7 @@ class Webserver(threading.Thread):
             "Content-Type": "application/json"
         }
         payload = {
-            "text": text,        
+            "text": text,
             "model_id": model_id,
             "voice_settings": {
                 "stability": 0.5,
@@ -538,33 +628,33 @@ class Webserver(threading.Thread):
         if not self.post_op_note_agent:
             self._logger.error("Post-op note agent not initialized")
             return jsonify({"error": "Post-op note agent not initialized"}), 500
-            
+
         try:
             # Check if we have direct data from the frontend
             data = request.json
             self._logger.debug(f"Received post-op note request: {data}")
-            
+
             if data and 'notes' in data and 'annotations' in data:
                 self._logger.info("Using frontend-provided data for post-op note generation")
-                
+
                 # Create a temporary folder for this data
                 import datetime
                 import tempfile
                 temp_dir = tempfile.mkdtemp(prefix="temp_procedure_")
-                
+
                 # Save the annotation data
                 annotation_json = os.path.join(temp_dir, "annotation.json")
                 with open(annotation_json, 'w') as f:
                     json.dump(data['annotations'], f, indent=2)
-                
+
                 # Save the notes data
                 notes_json = os.path.join(temp_dir, "notetaker_notes.json")
                 with open(notes_json, 'w') as f:
                     json.dump(data['notes'], f, indent=2)
-                
+
                 procedure_folder = temp_dir
                 self._logger.info(f"Created temporary procedure folder: {procedure_folder}")
-                
+
                 # If we have frontend data but it's empty, return a basic note
                 if not data['notes'] and not data['annotations']:
                     basic_note = {
@@ -579,16 +669,16 @@ class Webserver(threading.Thread):
                         "complications": []
                     }
                     return jsonify({
-                        "success": True, 
+                        "success": True,
                         "post_op_note": basic_note
                     })
-                
+
             else:
                 # No frontend data, look for annotations directory
                 self._logger.info("No frontend data, using stored annotations")
                 annotations_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'annotations')
                 os.makedirs(annotations_dir, exist_ok=True)
-                
+
                 # Find the most recent procedure folder
                 procedure_folders = []
                 for folder in os.listdir(annotations_dir):
@@ -596,21 +686,21 @@ class Webserver(threading.Thread):
                         folder_path = os.path.join(annotations_dir, folder)
                         if os.path.isdir(folder_path):
                             procedure_folders.append(folder_path)
-                
+
                 if not procedure_folders:
                     self._logger.warning("No procedure annotations found")
                     return jsonify({"error": "No procedure annotations found"}), 404
-                    
+
                 # Get the most recent folder by modification time
                 procedure_folder = max(procedure_folders, key=os.path.getmtime)
-            
+
             # Generate the post-op note using the agent
             self._logger.info(f"Generating post-op note from folder: {procedure_folder}")
             post_op_note = self.post_op_note_agent.generate_post_op_note(procedure_folder)
-            
+
             if post_op_note:
                 return jsonify({
-                    "success": True, 
+                    "success": True,
                     "post_op_note": post_op_note
                 })
             else:
@@ -628,14 +718,14 @@ class Webserver(threading.Thread):
                     "complications": []
                 }
                 return jsonify({
-                    "success": True, 
+                    "success": True,
                     "post_op_note": basic_note
                 })
-                
+
         except Exception as e:
             self._logger.error(f"Error generating post-op note: {e}", exc_info=True)
             return jsonify({"error": str(e)}), 500
-    
+
     def format_post_op_note_html(self, post_op_note):
         """Format the post-op note JSON into HTML for display"""
         try:
@@ -645,7 +735,7 @@ class Webserver(threading.Thread):
             findings = post_op_note.get("findings", [])
             timeline = post_op_note.get("procedure_timeline", [])
             complications = post_op_note.get("complications", [])
-            
+
             # Format the HTML - always include procedure info
             html = f"""
             <div class="p-4 border border-dark-700 rounded-lg">
@@ -658,7 +748,7 @@ class Webserver(threading.Thread):
                 </div>
             </div>
             """
-            
+
             # Only add sections with content to avoid empty bullet lists
             # Add findings section if available and not empty
             if findings and len(findings) > 0:
@@ -667,70 +757,70 @@ class Webserver(threading.Thread):
                     <h3 class="text-lg font-semibold mb-2 text-primary-400">Key Findings</h3>
                     <ul class="list-disc list-inside space-y-1 text-sm">
                 """
-                
+
                 for finding in findings:
                     if finding and finding.strip():  # Only add non-empty findings
                         html += f"<li>{finding}</li>"
-                
+
                 html += """
                     </ul>
                 </div>
                 """
-            
+
             # Add timeline section if available and not empty
             if timeline and len(timeline) > 0:
                 # Filter out events with no description
                 valid_events = [event for event in timeline if event.get('description') and event['description'].strip()]
-                
+
                 if valid_events:
                     html += f"""
                     <div class="p-4 border border-dark-700 rounded-lg mt-4">
                         <h3 class="text-lg font-semibold mb-2 text-primary-400">Procedure Timeline</h3>
                         <ul class="list-disc list-inside space-y-1 text-sm">
                     """
-                    
+
                     for event in valid_events:
                         time = event.get('time', 'Unknown')
                         description = event.get('description', 'No description')
                         html += f"<li><span class='font-medium text-primary-300'>{time}</span>: {description}</li>"
-                    
+
                     html += """
                         </ul>
                     </div>
                     """
-            
+
             # Add complications section if available and not empty
             if complications and len(complications) > 0:
                 # Filter out empty complications
                 valid_complications = [comp for comp in complications if comp and comp.strip()]
-                
+
                 if valid_complications:
                     html += f"""
                     <div class="p-4 border border-dark-700 rounded-lg mt-4">
                         <h3 class="text-lg font-semibold mb-2 text-primary-400">Complications</h3>
                         <ul class="list-disc list-inside space-y-1 text-sm">
                     """
-                    
+
                     for complication in valid_complications:
                         html += f"<li>{complication}</li>"
-                    
+
                     html += """
                         </ul>
                     </div>
                     """
-            
+
             # Add a message about annotations if no substantive content was found
             if not (findings or timeline or complications):
                 html += """
                 <div class="p-4 border border-dark-700 rounded-lg mt-4">
                     <h3 class="text-lg font-semibold mb-2 text-primary-400">Additional Information</h3>
                     <p class="text-sm text-gray-300">
-                        Insufficient procedure data is available for a detailed summary. 
+                        Insufficient procedure data is available for a detailed summary.
                         For better results, add more annotations and notes during the procedure.
                     </p>
                 </div>
                 """
-            
+
             return html
         except Exception as e:
             self._logger.error(f"Error formatting post-op note HTML: {e}", exc_info=True)
@@ -741,7 +831,7 @@ class Webserver(threading.Thread):
                 <p class="text-sm text-gray-400 mt-2">Try adding more annotations and notes to improve summary generation.</p>
             </div>
             """
-    
+
     def run(self):
         self.ws_thread.start()
         self.audio_ws_thread.start()
@@ -751,13 +841,13 @@ class Webserver(threading.Thread):
 
 if __name__ == "__main__":
     import argparse
-    
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Start the web server')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to listen on')
     parser.add_argument('--port', type=int, default=8050, help='Port to listen on')
     args = parser.parse_args()
-    
+
     print(f"Starting web server on {args.host}:{args.port}...")
     server = Webserver(web_server=args.host, web_port=args.port)
     server.start()

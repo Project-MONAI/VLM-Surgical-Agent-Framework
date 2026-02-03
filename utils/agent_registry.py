@@ -120,6 +120,11 @@ class AgentRegistry:
                 if config_dirs:
                     plugin_dirs.extend([Path(d) for d in config_dirs])
                     self._logger.debug(f"Loaded {len(config_dirs)} plugin dirs from global.yaml")
+                # Load excluded agents from global config
+                excluded_agents = global_config.get('excluded_agents', [])
+                if excluded_agents:
+                    self._excluded_agents.update(excluded_agents)
+                    self._logger.info(f"📦 Excluded agents from config: {excluded_agents}")
             except Exception as e:
                 self._logger.warning(f"Failed to load plugin directories from {global_config_path}: {e}")
 
@@ -144,12 +149,6 @@ class AgentRegistry:
             if plugin_dir.exists():
                 validated_dirs.append(plugin_dir)
                 self._logger.debug(f"✓ Valid plugin directory: {plugin_dir}")
-                with open("configs" / "global.yaml", 'r') as f:
-                    plugin_config = yaml.safe_load(f) or {}
-                    excluded_agents = plugin_config.get('excluded_agents', [])
-                    if excluded_agents:
-                        self._excluded_agents.update(excluded_agents)  # set uses update(), not extend()
-                        self._logger.info(f"📦 Plugin excludes: {excluded_agents}")
             else:
                 self._logger.warning(f"✗ Plugin directory not found: {plugin_dir}")
 

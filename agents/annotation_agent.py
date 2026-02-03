@@ -242,6 +242,20 @@ class AnnotationAgent(Agent):
             "response": "AnnotationAgent runs in the background and generates annotations only when image data is available."
         }
 
+    def get_annotations(self):
+        """
+        Public API method to retrieve all annotations.
+        Returns a copy of the annotations list to prevent external modifications.
+        """
+        return self.annotations.copy()
+
+    def get_latest_annotation(self):
+        """
+        Get the most recent annotation.
+        Returns None if no annotations have been generated yet.
+        """
+        return self.annotations[-1] if self.annotations else None
+
     def stop(self):
         self.stop_event.set()
         self._logger.info("Stopping AnnotationAgent background thread.")
