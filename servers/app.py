@@ -169,6 +169,10 @@ async def main():
     registry.register_dependency_resolver("get_video_source_mode", lambda: lambda: web.video_source_mode)
     logger.info("✓ Video source mode getter registered as dependency")
 
+    # Register video session ID getter (for agents to detect reconnections/video changes)
+    registry.register_dependency_resolver("get_session_id", lambda: web.get_session_id)
+    logger.info("✓ Video session ID getter registered as dependency")
+
     # Register annotation agent (will be updated after instantiation)
     annotation_agent_ref = {'agent': None}
     registry.register_dependency_resolver("annotation_agent", lambda: annotation_agent_ref['agent'])

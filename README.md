@@ -277,6 +277,29 @@ python -m pytest tests/test_video_source_registry.py -v
 ```
 
 
+## Video Session Tracking
+
+Agents can detect when video sources reconnect or change via a `video_source_session_id` counter that auto-increments on:
+- **WebRTC connections** (frontend signals when stream starts)
+- **Video uploads** (new file uploaded)
+- **Video selections** (existing file selected)
+- **Mode switches** (different video source detected)
+
+This prevents agents from maintaining stale state when reconnecting to the same source.
+
+**Usage:** Add `get_session_id` to agent dependencies, then check for changes:
+```python
+def __init__(self, settings_path, response_handler, get_session_id=None):
+    super().__init__(settings_path, response_handler, get_session_id=get_session_id)
+    self._last_session_id = None
+
+def process_request(self, text, chat_history, visual_info=None):
+    if self.get_session_id and self._last_session_id != self.get_session_id():
+        self._last_session_id = self.get_session_id()
+        # Reset agent state here
+```
+
+
 ## System Requirements
 
 * Python 3.12 or higher

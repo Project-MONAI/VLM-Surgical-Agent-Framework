@@ -45,7 +45,7 @@ function createFrameMessagePayload(frameData) {
 
   // Determine which video source mode we're in based on source_type
   let sourceMode = currentVideoSourceMode;
-  
+
   // If WebRTC is connected, find the source with source_type='livestream'
   if (isWebRTCConnected) {
     // Find the source mode that has source_type='livestream'
@@ -424,6 +424,18 @@ document.addEventListener('DOMContentLoaded', function() {
       setWebRTCButtonsState(false, true);
 
       console.log('WebRTC connection established successfully');
+
+      // Wait for video source config to load before signaling and capturing frames
+      await videoConfigPromise;
+
+      // Signal backend that WebRTC stream started (for session tracking)
+      if (typeof sendJSON === 'function') {
+        sendJSON({
+          type: 'webrtc_stream_started',
+          timestamp: Date.now()
+        });
+        console.log('Sent webrtc_stream_started signal to backend');
+      }
 
       // Start auto frame capture for live stream
       startAutoFrameCapture();
