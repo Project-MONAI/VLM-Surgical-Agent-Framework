@@ -36,7 +36,7 @@ class Agent(ABC):
 
     _llm_lock = Lock()
 
-    def __init__(self, settings_path, response_handler, agent_key=None, message_bus=None):
+    def __init__(self, settings_path, response_handler, agent_key=None, message_bus=None, get_session_id=None):
         self._logger = logging.getLogger(f"{__name__}.{type(self).__name__}")
 
         self.load_settings(settings_path, agent_key=agent_key)
@@ -57,6 +57,12 @@ class Agent(ABC):
             self.message_queue = self.message_bus.register_agent(self.agent_name)
             self._start_message_listener()
             self._logger.info(f"{self.agent_name} registered with message bus")
+
+        # Session tracking integration (optional)
+        # Agents can use this to detect when video sources reconnect/change
+        self.get_session_id = get_session_id
+        if self.get_session_id:
+            self._logger.debug(f"{self.agent_name} registered with session tracking")
 
     def load_settings(self, settings_path, agent_key=None):
         """

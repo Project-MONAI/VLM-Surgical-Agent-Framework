@@ -58,6 +58,10 @@ class Webserver(threading.Thread):
             self.video_source_mode = self.video_source_registry.get_default_mode()
             self._logger.info(f"✓ Default video source: {self.video_source_mode}")
 
+            # Session tracking: Increments on each connect/upload to help agents detect reconnections
+            self.video_source_session_id = 0
+            self._session_lock = threading.Lock()
+
             # Backward compatibility: Expose primary queue as frame_queue
             self.frame_queue = self.frame_queues.get(self.video_source_mode, queue.Queue())
 
@@ -67,6 +71,9 @@ class Webserver(threading.Thread):
             self.frame_queue = queue.Queue()
             self.frame_queues = {'default': self.frame_queue}
             self.video_source_mode = 'default'
+            # Session tracking for legacy mode
+            self.video_source_session_id = 0
+            self._session_lock = threading.Lock()
         except Exception as e:
             self._logger.error(f"Error initializing Video Source Registry: {e}", exc_info=True)
             self._logger.warning("Falling back to legacy single-feed mode")
@@ -74,6 +81,9 @@ class Webserver(threading.Thread):
             self.frame_queue = queue.Queue()
             self.frame_queues = {'default': self.frame_queue}
             self.video_source_mode = 'default'
+            # Session tracking for legacy mode
+            self.video_source_session_id = 0
+            self._session_lock = threading.Lock()
 
         # Create videos directory if it doesn't exist
         self.videos_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploaded_videos')
@@ -139,6 +149,24 @@ class Webserver(threading.Thread):
         # Create a socket to talk to Whisper. We'll reconnect for each new audio session.
         self.create_whisper_socket()
 
+    def get_session_id(self):
+        """
+        Get the current video source session ID.
+        This ID increments on each WebRTC connection or video upload/selection.
+        Agents can use this to detect when a new video session has started.
+        """
+        with self._session_lock:
+            return self.video_source_session_id
+
+    def _increment_session_id(self, reason=""):
+        """
+        Increment the session ID to signal a new video session.
+        Called on WebRTC connect, video upload, or video selection.
+        """
+        with self._session_lock:
+            self.video_source_session_id += 1
+            self._logger.info(f"Video session ID incremented to {self.video_source_session_id} ({reason})")
+
     def create_whisper_socket(self):
         """Create a fresh socket to the Whisper server (port 43001)."""
         self.whisper_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -203,6 +231,9 @@ class Webserver(threading.Thread):
 
         # Update current video path
         self.current_video_path = video_path
+
+        # Increment session ID to signal new video session
+        self._increment_session_id(f"video upload: {final_filename}")
 
         # Send message to client to update video source
         self.send_message({
@@ -277,6 +308,9 @@ class Webserver(threading.Thread):
         # Update current video path
         self.current_video_path = video_path
 
+        # Increment session ID to signal new video session
+        self._increment_session_id(f"video selection: {filename}")
+
         # Send message to client to update video source
         self.send_message({
             "video_updated": True,
@@ -312,6 +346,10 @@ class Webserver(threading.Thread):
             self._logger.error(f"WebSocket message queue processing error: {e}", exc_info=True)
 
     def websocket_listener(self, websocket):
+        # Track if this WebSocket has sent its first frame to increment session_id once
+        first_frame_received = False
+        stream_start_signaled = False  # Track if we got explicit webrtc_stream_started signal
+
         try:
             while True:
                 try:
@@ -324,8 +362,15 @@ class Webserver(threading.Thread):
                             self._logger.debug("Received heartbeat from client")
                             continue
 
+                        # Handle WebRTC stream start signal from client
+                        if data.get('type') == 'webrtc_stream_started':
+                            self._increment_session_id("WebRTC stream started")
+                            stream_start_signaled = True
+                            continue
+
                         # Auto-detect video source mode from WebSocket message
                         detected_mode = None
+                        mode_just_switched = False
                         if self.video_source_registry:
                             detected_mode = self.video_source_registry.detect_mode_from_message(data)
                             if detected_mode:
@@ -335,6 +380,13 @@ class Webserver(threading.Thread):
                                     self.video_source_mode = detected_mode
                                     # Update backward compatibility frame_queue reference
                                     self.frame_queue = self.frame_queues.get(detected_mode, self.frame_queue)
+                                    # Increment session ID when switching video sources
+                                    # Skip if we just got webrtc_stream_started signal to avoid double counting
+                                    if stream_start_signaled:
+                                        stream_start_signaled = False
+                                    else:
+                                        self._increment_session_id(f"WebRTC mode switch to {detected_mode}")
+                                    mode_just_switched = True
 
                                 # Get frame data key for this source
                                 auto_detect_flags = self.video_source_registry.get_auto_detect_flags(detected_mode)
@@ -342,6 +394,17 @@ class Webserver(threading.Thread):
                                 frame_data = data.get(frame_data_key)
 
                                 if frame_data:
+                                    # Increment session ID on first frame received from a new WebRTC connection
+                                    if not first_frame_received:
+                                        # Only increment if mode didn't just switch (to avoid double increment)
+                                        if not mode_just_switched:
+                                            self._increment_session_id(f"WebRTC connect to {detected_mode}")
+                                        first_frame_received = True
+
+                                    # Clear stream_start_signaled flag after first frame
+                                    if stream_start_signaled and first_frame_received:
+                                        stream_start_signaled = False
+
                                     self._logger.debug(f"Got frame data for '{detected_mode}' source")
                                     # Put frame in the appropriate queue
                                     target_queue = self.frame_queues.get(detected_mode)
@@ -356,6 +419,11 @@ class Webserver(threading.Thread):
                             if data.get('auto_frame') == True:
                                 frame_data = data.get('frame_data')
                                 if frame_data:
+                                    # Increment session ID on first frame in legacy mode
+                                    if not first_frame_received:
+                                        self._increment_session_id("WebRTC connect (legacy mode)")
+                                        first_frame_received = True
+
                                     self._logger.debug("Got auto_frame data from client (legacy mode).")
                                     self.frame_queue.put(frame_data)
                                     self.lastProcessedFrame = frame_data
