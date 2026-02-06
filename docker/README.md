@@ -97,6 +97,10 @@ VLLM_ENFORCE_EAGER=true ./run-surgical-agents.sh run vllm
 GPU_MEMORY_UTILIZATION=0.5 VLLM_ENFORCE_EAGER=true ./run-surgical-agents.sh
 ```
 
+### IGX Thor Support
+
+The framework includes optimized support for NVIDIA IGX Thor devices. When running on IGX Thor hardware, the system automatically detects the device and uses NVIDIA's prebuilt optimized vLLM container instead of building from source. This provides faster setup times and better performance on Thor hardware while maintaining full compatibility with x86_64 and aarch64 platforms. No additional configuration is required.
+
 ### Service Endpoints
 
 Once running, the following services will be available:
