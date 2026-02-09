@@ -516,8 +516,7 @@ run_webrtc_usbcam() {
     docker run -d \
         --name vlm-surgical-webrtc-usbcam \
         --net host \
-        --device /dev/video0:/dev/video0 \
-        --device /dev/video1:/dev/video1 \
+        --device /dev/video0:/dev/video${camera_index} \
         -e CAMERA_INDEX=${camera_index} \
         -e CAMERA_FPS=${fps} \
         -e WEBRTC_PORT=${port} \
@@ -590,7 +589,7 @@ show_status() {
         # Check WebRTC USB Camera status
         local webrtc_status=$(docker ps --filter "name=vlm-surgical-webrtc-usbcam" --format "{{.Status}}" 2>/dev/null)
         if [[ "$webrtc_status" =~ ^Up ]]; then
-            echo -e "${GREEN}✅ WebRTC USB Camera:${NC} http://localhost:8080 (USB Camera Stream) - $webrtc_status"
+            echo -e "${GREEN}✅ WebRTC USB Camera:${NC} http://localhost:${WEBRTC_PORT} (USB Camera Stream) - $webrtc_status"
         elif [ -n "$webrtc_status" ]; then
             echo -e "${YELLOW}⚠️  WebRTC USB Camera:${NC} $webrtc_status"
         else

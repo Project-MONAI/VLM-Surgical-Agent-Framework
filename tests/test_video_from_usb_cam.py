@@ -112,7 +112,7 @@ class USBCameraTrack(VideoStreamTrack):
         actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
-        logger.info(f"Camera opened successfully:")
+        logger.info("Camera opened successfully:")
         logger.info(f"  Resolution: {actual_width}x{actual_height}")
         logger.info(f"  FPS: {actual_fps}")
 

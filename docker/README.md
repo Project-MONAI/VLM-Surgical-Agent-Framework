@@ -300,7 +300,7 @@ The WebRTC USB Camera server streams video from USB cameras via WebRTC protocol.
 CAMERA_INDEX=1 CAMERA_FPS=60 WEBRTC_PORT=9090 ./run-surgical-agents.sh run webrtc_usbcam
 ```
 
-**NOTE**: The server only runs if a USB camera is connected to the system. But default, using `./run-surgical-agents.sh` will not start the server.
+**NOTE**: The server only runs if a USB camera is connected to the system. By default, using `./run-surgical-agents.sh` will not start the server.
 
 #### Configuration
 
