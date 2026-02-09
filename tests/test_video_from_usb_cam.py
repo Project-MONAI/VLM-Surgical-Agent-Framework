@@ -13,13 +13,14 @@
 USB Camera WebRTC Test Utility
 
 Simple utility to capture video from USB camera and stream via WebRTC.
-Provides only the essential WebRTC offer/answer endpoint.
+Provides WebRTC offer/answer and ICE server configuration endpoints.
 
 Usage:
     python test_video_from_usb_cam.py [--camera-index 0] [--port 8080] [--fps 30]
 
 Endpoints:
-    POST /offer - WebRTC offer/answer exchange
+    POST /offer      - WebRTC offer/answer exchange
+    GET /iceServers  - Retrieve ICE server configuration for clients
 """
 
 from __future__ import annotations
