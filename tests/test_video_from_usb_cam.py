@@ -146,6 +146,7 @@ class USBCameraTrack(VideoStreamTrack):
         self._running = False
         if self._capture_thread.is_alive():
             self._capture_thread.join(timeout=2.0)
+        super().stop()
 
     async def recv(self):
         """
