@@ -49,6 +49,11 @@ ENV/
 *.swo
 *~
 
+
+# Python venv
+.venv/
+venv/
+
 # Uploaded content
 uploaded_videos/
 

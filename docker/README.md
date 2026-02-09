@@ -1,11 +1,12 @@
 # Host the Surgical Agent Framework in Docker Containers
 
-This repository provides Docker containers for running the Surgical Agent Framework. The framework is split into four main components:
+This repository provides Docker containers for running the Surgical Agent Framework. The framework is split into five main components:
 
 1. **vLLM Server**: Hosts the large language model for agent interactions
 2. **Whisper Server**: Provides real-time speech-to-text capabilities
 3. **UI Server**: Serves the web interface and coordinates communication
 4. **TTS Server**: Provides text-to-speech voice synthesis capabilities
+5. **WebRTC USB Camera**: Streams video from USB cameras via WebRTC
 
 Each component runs in its own container for better isolation and scalability. The containers communicate over the host network for simplicity in development.
 
@@ -48,6 +49,7 @@ This will automatically:
 - `whisper` - Whisper server only
 - `ui` - UI server only
 - `tts` - TTS server only
+- `webrtc_usbcam` - WebRTC USB Camera server only
 - (no component) - All components (default)
 
 ### Examples
@@ -108,6 +110,7 @@ Once running, the following services will be available:
 - **Whisper Server**: http://localhost:8765 (Speech-to-Text)
 - **UI Server**: http://localhost:8050 (Web Interface)
 - **TTS Server**: http://localhost:8082 (Text-to-Speech)
+- **WebRTC USB Camera**: http://localhost:8080 (USB Camera WebRTC Stream)
 
 ## Manual Docker Commands (Advanced)
 
@@ -140,7 +143,6 @@ docker run -it --rm --net host --gpus all \
   --enforce-eager \
   --max-model-len 4096 \
   --max-num-seqs 8 \
-  --disable-mm-preprocessor-cache \
   --load-format bitsandbytes \
   --quantization bitsandbytes
 ```
@@ -282,6 +284,49 @@ python3 ../test-tts.py
 ```bash
 # Check NVIDIA Docker runtime
 docker run --rm --gpus all nvidia/cuda:11.8-base-ubuntu22.04 nvidia-smi
+```
+
+### WebRTC USB Camera (Video Streaming)
+
+The WebRTC USB Camera server streams video from USB cameras via WebRTC protocol. This is useful for testing real-time video feeds into the surgical agent framework. 
+
+#### Quick WebRTC USB Camera Setup
+
+```bash
+# Build and run the WebRTC USB Camera server
+./run-surgical-agents.sh build_and_run webrtc_usbcam
+
+# Or with custom configuration
+CAMERA_INDEX=1 CAMERA_FPS=60 WEBRTC_PORT=9090 ./run-surgical-agents.sh run webrtc_usbcam
+```
+
+**NOTE**: The server only runs if a USB camera is connected to the system. But default, using `./run-surgical-agents.sh` will not start the server.
+
+#### Configuration
+
+The WebRTC USB Camera server supports the following environment variables:
+
+- **CAMERA_INDEX**: USB camera device index (default: 0)
+- **CAMERA_FPS**: Target frames per second (default: 30)
+- **WEBRTC_PORT**: Server port (default: 8080)
+
+**Examples:**
+
+```bash
+# Use camera 1 at 60 FPS on port 9090
+CAMERA_INDEX=1 CAMERA_FPS=60 WEBRTC_PORT=9090 ./run-surgical-agents.sh run webrtc_usbcam
+
+# Use default camera (0) at 30 FPS on default port (8080)
+./run-surgical-agents.sh run webrtc_usbcam
+```
+
+#### Finding Available Cameras
+
+To find available camera indices on your system:
+
+```bash
+# Check camera capabilities
+v4l2-ctl --device=/dev/video0 --list-formats-ext
 ```
 
 ## Troubleshooting

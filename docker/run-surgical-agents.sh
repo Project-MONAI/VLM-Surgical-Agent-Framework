@@ -252,6 +252,13 @@ build_tts() {
     echo -e "${GREEN}✅ TTS build completed${NC}"
 }
 
+# Function to build WebRTC USB Camera
+build_webrtc_usbcam() {
+    echo -e "\n${BLUE}🔨 Building WebRTC USB Camera Server...${NC}"
+    docker build -t vlm-surgical-agents:webrtc-usbcam -f "$REPO_PATH/docker/Dockerfile.webrtc_usbcam" "$REPO_PATH"
+    echo -e "${GREEN}✅ WebRTC USB Camera build completed${NC}"
+}
+
 # Function to stop containers
 stop_containers() {
     local component="$1"
@@ -269,6 +276,9 @@ stop_containers() {
             ;;
         tts)
             containers="vlm-surgical-tts"
+            ;;
+        webrtc_usbcam)
+            containers="vlm-surgical-webrtc-usbcam"
             ;;
         *)
             containers="vlm-surgical-vllm vlm-surgical-whisper vlm-surgical-ui vlm-surgical-tts"
@@ -490,6 +500,37 @@ run_tts() {
     echo -e "${GREEN}✅ TTS Server started${NC}"
 }
 
+# Function to run WebRTC USB Camera server
+run_webrtc_usbcam() {
+    echo -e "\n${BLUE}🚀 Starting WebRTC USB Camera Server...${NC}"
+    
+    # Get camera index from environment or use default
+    local camera_index=${CAMERA_INDEX:-0}
+    local fps=${CAMERA_FPS:-30}
+    local port=${WEBRTC_PORT:-8080}
+    
+    echo -e "${BLUE}💡 Using camera index: ${camera_index}${NC}"
+    echo -e "${BLUE}💡 Using FPS: ${fps}${NC}"
+    echo -e "${BLUE}💡 Using port: ${port}${NC}"
+    
+    docker run -d \
+        --name vlm-surgical-webrtc-usbcam \
+        --net host \
+        --device /dev/video0:/dev/video0 \
+        --device /dev/video1:/dev/video1 \
+        -e CAMERA_INDEX=${camera_index} \
+        -e CAMERA_FPS=${fps} \
+        -e WEBRTC_PORT=${port} \
+        --restart unless-stopped \
+        vlm-surgical-agents:webrtc-usbcam \
+        --host 0.0.0.0 \
+        --port ${port} \
+        --camera-index ${camera_index} \
+        --fps ${fps}
+    echo -e "${GREEN}✅ WebRTC USB Camera Server started on port ${port}${NC}"
+    echo -e "${BLUE}📹 Access WebRTC endpoint at: http://localhost:${port}/offer${NC}"
+}
+
 # Function to show status
 show_status() {
     echo -e "\n${BLUE}📊 Container Status:${NC}"
@@ -545,6 +586,16 @@ show_status() {
         else
             echo -e "${RED}❌ TTS Server:${NC} Not found"
         fi
+
+        # Check WebRTC USB Camera status
+        local webrtc_status=$(docker ps --filter "name=vlm-surgical-webrtc-usbcam" --format "{{.Status}}" 2>/dev/null)
+        if [[ "$webrtc_status" =~ ^Up ]]; then
+            echo -e "${GREEN}✅ WebRTC USB Camera:${NC} http://localhost:8080 (USB Camera Stream) - $webrtc_status"
+        elif [ -n "$webrtc_status" ]; then
+            echo -e "${YELLOW}⚠️  WebRTC USB Camera:${NC} $webrtc_status"
+        else
+            echo -e "${RED}❌ WebRTC USB Camera:${NC} Not found"
+        fi
     fi
 
     echo -e "\n${YELLOW}📝 Useful commands:${NC}"
@@ -589,6 +640,14 @@ show_logs() {
                 echo "TTS container not found"
             fi
             ;;
+        webrtc_usbcam)
+            echo -e "${BLUE}📋 WebRTC USB Camera Logs:${NC}"
+            if docker ps -a --filter "name=vlm-surgical-webrtc-usbcam" --format "{{.Names}}" | grep -q "vlm-surgical-webrtc-usbcam"; then
+                docker logs vlm-surgical-webrtc-usbcam --tail 50
+            else
+                echo "WebRTC USB Camera container not found"
+            fi
+            ;;
         *)
             echo -e "${BLUE}📋 All Container Logs:${NC}"
             echo -e "${BLUE}--- vLLM Logs ---${NC}"
@@ -615,6 +674,12 @@ show_logs() {
             else
                 echo "TTS container not found"
             fi
+            echo -e "\n${BLUE}--- WebRTC USB Camera Logs ---${NC}"
+            if docker ps -a --filter "name=vlm-surgical-webrtc-usbcam" --format "{{.Names}}" | grep -q "vlm-surgical-webrtc-usbcam"; then
+                docker logs vlm-surgical-webrtc-usbcam --tail 30 | head -20
+            else
+                echo "WebRTC USB Camera container not found"
+            fi
             ;;
     esac
 }
@@ -636,6 +701,9 @@ handle_build() {
             ;;
         tts)
             build_tts
+            ;;
+        webrtc_usbcam)
+            build_webrtc_usbcam
             ;;
         *)
             build_vllm
@@ -668,6 +736,10 @@ handle_run() {
         tts)
             stop_containers "tts"
             run_tts
+            ;;
+        webrtc_usbcam)
+            stop_containers "webrtc_usbcam"
+            run_webrtc_usbcam
             ;;
         *)
             stop_containers
@@ -713,6 +785,12 @@ handle_build_and_run() {
             run_tts
             echo -e "${GREEN}✅ TTS built and started${NC}"
             ;;
+        webrtc_usbcam)
+            build_webrtc_usbcam
+            stop_containers "webrtc_usbcam"
+            run_webrtc_usbcam
+            echo -e "${GREEN}✅ WebRTC USB Camera built and started${NC}"
+            ;;
         *)
             build_vllm
             build_whisper
@@ -750,6 +828,7 @@ show_help() {
     echo -e "  whisper        Whisper server only"
     echo -e "  ui             UI server only"
     echo -e "  tts            TTS server only"
+    echo -e "  webrtc_usbcam  WebRTC USB Camera server only"
     echo -e "  (no component) All components (default)"
     echo -e ""
     echo -e "${YELLOW}Examples:${NC}"
@@ -762,6 +841,7 @@ show_help() {
     echo -e "  $0 build whisper        # Build only Whisper server"
     echo -e "  $0 build ui             # Build only UI server"
     echo -e "  $0 build tts            # Build only TTS server"
+    echo -e "  $0 build webrtc_usbcam  # Build only WebRTC USB Camera server"
     echo -e ""
     echo -e "${BLUE}  Run Commands:${NC}"
     echo -e "  $0 run                  # Run all components"
@@ -769,6 +849,7 @@ show_help() {
     echo -e "  $0 run whisper          # Run only Whisper server"
     echo -e "  $0 run ui               # Run only UI server"
     echo -e "  $0 run tts              # Run only TTS server"
+    echo -e "  $0 run webrtc_usbcam    # Run only WebRTC USB Camera server"
     echo -e ""
     echo -e "${BLUE}  Build and Run Commands:${NC}"
     echo -e "  $0 build_and_run        # Build and run all components"
@@ -776,6 +857,7 @@ show_help() {
     echo -e "  $0 build_and_run whisper # Build and run only Whisper server"
     echo -e "  $0 build_and_run ui     # Build and run only UI server"
     echo -e "  $0 build_and_run tts    # Build and run only TTS server"
+    echo -e "  $0 build_and_run webrtc_usbcam # Build and run only WebRTC USB Camera"
     echo -e ""
     echo -e "${BLUE}  Stop Commands:${NC}"
     echo -e "  $0 stop                 # Stop all containers"
@@ -783,6 +865,7 @@ show_help() {
     echo -e "  $0 stop whisper         # Stop only Whisper server"
     echo -e "  $0 stop ui              # Stop only UI server"
     echo -e "  $0 stop tts             # Stop only TTS server"
+    echo -e "  $0 stop webrtc_usbcam   # Stop only WebRTC USB Camera server"
     echo -e ""
     echo -e "${BLUE}  Logs Commands:${NC}"
     echo -e "  $0 logs                 # Show logs for all containers"
@@ -790,6 +873,7 @@ show_help() {
     echo -e "  $0 logs whisper         # Show Whisper server logs"
     echo -e "  $0 logs ui              # Show UI server logs"
     echo -e "  $0 logs tts             # Show TTS server logs"
+    echo -e "  $0 logs webrtc_usbcam   # Show WebRTC USB Camera logs"
     echo -e ""
     echo -e "${BLUE}  Download Command:${NC}"
     echo -e "  $0 download             # Download surgical LLM model"
@@ -802,6 +886,12 @@ show_help() {
     echo -e "                          Example: GPU_MEMORY_UTILIZATION=0.5 $0 run vllm"
     echo -e "  VLLM_ENFORCE_EAGER      Enable enforce eager mode for vLLM (default: false)"
     echo -e "                          Example: VLLM_ENFORCE_EAGER=true $0 run vllm"
+    echo -e "  CAMERA_INDEX            Set USB camera index (default: 0)"
+    echo -e "                          Example: CAMERA_INDEX=1 $0 run webrtc_usbcam"
+    echo -e "  CAMERA_FPS              Set camera FPS (default: 30)"
+    echo -e "                          Example: CAMERA_FPS=60 $0 run webrtc_usbcam"
+    echo -e "  WEBRTC_PORT             Set WebRTC server port (default: 8080)"
+    echo -e "                          Example: WEBRTC_PORT=9090 $0 run webrtc_usbcam"
 }
 
 # Parse command line arguments
