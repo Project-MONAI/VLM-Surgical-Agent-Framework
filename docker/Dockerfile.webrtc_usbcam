@@ -28,32 +28,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies with specific versions
+# Install Python dependencies with specific versions (only direct deps)
 RUN pip install --no-cache-dir \
     opencv-python==4.13.0.92 \
     aiohttp==3.13.3 \
     aiortc==1.14.0 \
     numpy==2.4.2 \
-    av==16.1.0 \
-    aioice==0.10.2 \
-    aiohappyeyeballs==2.6.1 \
-    aiosignal==1.4.0 \
-    attrs==25.4.0 \
-    cffi==2.0.0 \
-    cryptography==46.0.4 \
-    dnspython==2.8.0 \
-    frozenlist==1.8.0 \
-    google-crc32c==1.8.0 \
-    idna==3.11 \
-    ifaddr==0.2.0 \
-    multidict==6.7.1 \
-    propcache==0.4.1 \
-    pycparser==3.0 \
-    pyee==13.0.0 \
-    pylibsrtp==1.0.0 \
-    pyopenssl==25.3.0 \
-    typing-extensions==4.15.0 \
-    yarl==1.22.0
+    av==16.1.0
 
 # Create working directory
 WORKDIR /app
