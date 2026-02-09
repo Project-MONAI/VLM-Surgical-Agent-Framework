@@ -1,0 +1,52 @@
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+FROM python:3.12-slim
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies for OpenCV and USB camera access
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    libv4l-dev \
+    v4l-utils \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies with specific versions (only direct deps)
+RUN pip install --no-cache-dir \
+    opencv-python==4.13.0.92 \
+    aiohttp==3.13.3 \
+    aiortc==1.14.0 \
+    numpy==2.4.2 \
+    av==16.1.0
+
+# Create working directory
+WORKDIR /app
+
+# Copy the test utility script
+COPY tests/test_video_from_usb_cam.py /app/
+
+# Expose the default port
+EXPOSE 8080
+
+# Set the entrypoint
+ENTRYPOINT ["python3", "/app/test_video_from_usb_cam.py"]
+
+# Default arguments (can be overridden at runtime)
+CMD ["--host", "0.0.0.0", "--port", "8080", "--camera-index", "0", "--fps", "30"]
