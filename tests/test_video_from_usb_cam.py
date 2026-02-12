@@ -74,17 +74,21 @@ class USBCameraTrack(VideoStreamTrack):
     the camera, and serves them via WebRTC.
     """
 
-    def __init__(self, camera_index: int = 0, fps: int = 30):
+    def __init__(self, camera_index: int = 0, fps: int = 30, width: int = 1280, height: int = 720):
         """
         Initialize the USB camera track.
 
         Args:
             camera_index: Index of the USB camera device (0 for default camera)
             fps: Target frames per second for the stream
+            width: Desired capture width in pixels
+            height: Desired capture height in pixels
         """
         super().__init__()
         self.camera_index = camera_index
         self.fps = fps
+        self.width = width
+        self.height = height
         self.frame_count = 0
         self._lock = threading.Lock()
         self._frame: np.ndarray | None = None
@@ -97,24 +101,43 @@ class USBCameraTrack(VideoStreamTrack):
 
     def _capture_loop(self):
         """Continuously capture frames from the USB camera in a background thread."""
-        cap = cv2.VideoCapture(self.camera_index)
+        # Open the camera with all format properties set atomically.
+        # Using the V4L2 backend explicitly and passing properties in the
+        # constructor ensures OpenCV issues a single VIDIOC_S_FMT ioctl
+        # with MJPG + the desired resolution, rather than piecemeal
+        # set() calls that can each trigger a separate format negotiation
+        # (often falling back to a lower resolution).
+        #
+        # MJPG is essential for USB 2.0 cameras — uncompressed YUYV
+        # saturates the bus bandwidth at anything above 640x480 @ 30 FPS.
+        cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2, [
+            cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"),
+            cv2.CAP_PROP_FRAME_WIDTH, self.width,
+            cv2.CAP_PROP_FRAME_HEIGHT, self.height,
+            cv2.CAP_PROP_FPS, self.fps,
+        ])
 
         if not cap.isOpened():
             logger.error(f"Failed to open camera at index {self.camera_index}")
             return
 
-        # Set camera properties for optimal streaming
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cap.set(cv2.CAP_PROP_FPS, self.fps)
-
+        actual_fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
+        actual_fourcc = "".join(chr((actual_fourcc_int >> 8 * i) & 0xFF) for i in range(4))
         actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
         logger.info("Camera opened successfully:")
-        logger.info(f"  Resolution: {actual_width}x{actual_height}")
+        logger.info(f"  Pixel format: {actual_fourcc}")
+        logger.info(f"  Resolution: {actual_width}x{actual_height} (requested {self.width}x{self.height})")
         logger.info(f"  FPS: {actual_fps}")
+
+        if actual_width != self.width or actual_height != self.height:
+            logger.warning(
+                f"Camera did not honour requested resolution {self.width}x{self.height} "
+                f"— got {actual_width}x{actual_height}. "
+                "Check supported modes with: v4l2-ctl --list-formats-ext"
+            )
 
         frame_time = 1.0 / self.fps
         last_capture = time.time()
@@ -221,9 +244,11 @@ async def offer(request):
     # Get camera configuration from app
     camera_index = request.app["camera_index"]
     fps = request.app["fps"]
+    width = request.app["width"]
+    height = request.app["height"]
 
     # Create and add video track
-    video_track = USBCameraTrack(camera_index=camera_index, fps=fps)
+    video_track = USBCameraTrack(camera_index=camera_index, fps=fps, width=width, height=height)
     pc.addTrack(video_track)
     pc._video_track = video_track  # type: ignore[attr-defined]
     active_video_tracks.add(video_track)
@@ -278,6 +303,8 @@ async def main(args):
     app = web.Application(middlewares=[cors_middleware])
     app["camera_index"] = args.camera_index
     app["fps"] = args.fps
+    app["width"] = args.width
+    app["height"] = args.height
     app.on_shutdown.append(on_shutdown)
 
     # Add WebRTC endpoints
@@ -332,6 +359,18 @@ if __name__ == "__main__":
         type=int,
         default=8080,
         help="Server port"
+    )
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=1280,
+        help="Camera capture width in pixels"
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=720,
+        help="Camera capture height in pixels"
     )
 
     args = parser.parse_args()

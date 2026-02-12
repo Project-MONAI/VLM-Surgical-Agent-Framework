@@ -49,4 +49,4 @@ EXPOSE 8080
 ENTRYPOINT ["python3", "/app/test_video_from_usb_cam.py"]
 
 # Default arguments (can be overridden at runtime)
-CMD ["--host", "0.0.0.0", "--port", "8080", "--camera-index", "0", "--fps", "30"]
+CMD ["--host", "0.0.0.0", "--port", "8080", "--camera-index", "0", "--fps", "30", "--width", "1920", "--height", "1080"]

@@ -504,12 +504,15 @@ run_tts() {
 run_webrtc_usbcam() {
     echo -e "\n${BLUE}🚀 Starting WebRTC USB Camera Server...${NC}"
     
-    # Get camera index from environment or use default
+    # Get camera settings from environment or use defaults
     local camera_index=${CAMERA_INDEX:-0}
     local fps=${CAMERA_FPS:-30}
     local port=${WEBRTC_PORT:-8080}
+    local width=${CAMERA_WIDTH:-1920}
+    local height=${CAMERA_HEIGHT:-1080}
     
     echo -e "${BLUE}💡 Using camera index: ${camera_index}${NC}"
+    echo -e "${BLUE}💡 Using resolution: ${width}x${height}${NC}"
     echo -e "${BLUE}💡 Using FPS: ${fps}${NC}"
     echo -e "${BLUE}💡 Using port: ${port}${NC}"
     
@@ -519,13 +522,17 @@ run_webrtc_usbcam() {
         --device /dev/video0:/dev/video${camera_index} \
         -e CAMERA_INDEX=${camera_index} \
         -e CAMERA_FPS=${fps} \
+        -e CAMERA_WIDTH=${width} \
+        -e CAMERA_HEIGHT=${height} \
         -e WEBRTC_PORT=${port} \
         --restart unless-stopped \
         vlm-surgical-agents:webrtc-usbcam \
         --host 0.0.0.0 \
         --port ${port} \
         --camera-index ${camera_index} \
-        --fps ${fps}
+        --fps ${fps} \
+        --width ${width} \
+        --height ${height}
     echo -e "${GREEN}✅ WebRTC USB Camera Server started on port ${port}${NC}"
     echo -e "${BLUE}📹 Access WebRTC endpoint at: http://localhost:${port}/offer${NC}"
 }
@@ -889,6 +896,10 @@ show_help() {
     echo -e "                          Example: CAMERA_INDEX=1 $0 run webrtc_usbcam"
     echo -e "  CAMERA_FPS              Set camera FPS (default: 30)"
     echo -e "                          Example: CAMERA_FPS=60 $0 run webrtc_usbcam"
+    echo -e "  CAMERA_WIDTH            Set camera capture width (default: 1920)"
+    echo -e "                          Example: CAMERA_WIDTH=1280 $0 run webrtc_usbcam"
+    echo -e "  CAMERA_HEIGHT           Set camera capture height (default: 1080)"
+    echo -e "                          Example: CAMERA_HEIGHT=720 $0 run webrtc_usbcam"
     echo -e "  WEBRTC_PORT             Set WebRTC server port (default: 8080)"
     echo -e "                          Example: WEBRTC_PORT=9090 $0 run webrtc_usbcam"
 }
