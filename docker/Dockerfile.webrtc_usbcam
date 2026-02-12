@@ -40,13 +40,13 @@ RUN pip install --no-cache-dir \
 WORKDIR /app
 
 # Copy the test utility script
-COPY tests/test_video_from_usb_cam.py /app/
+COPY docker/utils/webrtc_usbcam.py /app/
 
 # Expose the default port
 EXPOSE 8080
 
 # Set the entrypoint
-ENTRYPOINT ["python3", "/app/test_video_from_usb_cam.py"]
+ENTRYPOINT ["python3", "/app/webrtc_usbcam.py"]
 
 # Default arguments (can be overridden at runtime)
 CMD ["--host", "0.0.0.0", "--port", "8080", "--camera-index", "0", "--fps", "30", "--width", "1920", "--height", "1080"]
