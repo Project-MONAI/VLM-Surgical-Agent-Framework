@@ -1,0 +1,53 @@
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:v3.11.0-cuda13
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies for V4L2 camera access
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    libv4l-dev \
+    v4l-utils \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies (holoscan, numpy, cupy are already in the base image)
+RUN pip install --no-cache-dir \
+    aiohttp \
+    aiortc \
+    aiohttp-cors \
+    av
+
+# Create working directory
+WORKDIR /app
+
+# Download WebRTC server operator from HoloHub (upstream source of truth)
+ARG HOLOHUB_REF=6dda02e26aab81b43d2595ea5e55632e5ad9566f
+RUN mkdir -p /app/operators/webrtc_server \
+    && curl -fsSL "https://raw.githubusercontent.com/nvidia-holoscan/holohub/${HOLOHUB_REF}/operators/webrtc_server/webrtc_server_op.py" \
+       -o /app/operators/webrtc_server/webrtc_server_op.py \
+    && touch /app/operators/__init__.py /app/operators/webrtc_server/__init__.py
+
+# Copy the application (arm64 Holoscan-based script)
+COPY tests/test_video_from_usb_cam.arm64.py /app/test_video_from_usb_cam.py
+
+# Expose the default port
+EXPOSE 8080
+
+# Set the entrypoint
+ENTRYPOINT ["python3", "/app/test_video_from_usb_cam.py"]
+
+# Default arguments (can be overridden at runtime)
+CMD ["--source", "camera", "--no-serve-client", "--host", "0.0.0.0", "--port", "8080"]

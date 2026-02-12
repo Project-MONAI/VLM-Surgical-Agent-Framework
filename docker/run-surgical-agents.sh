@@ -255,7 +255,14 @@ build_tts() {
 # Function to build WebRTC USB Camera
 build_webrtc_usbcam() {
     echo -e "\n${BLUE}🔨 Building WebRTC USB Camera Server...${NC}"
-    docker build -t vlm-surgical-agents:webrtc-usbcam -f "$REPO_PATH/docker/Dockerfile.webrtc_usbcam" "$REPO_PATH"
+    local dockerfile="Dockerfile.webrtc_usbcam"
+    if [[ "$ARCH" == "aarch64" ]]; then
+        dockerfile="Dockerfile.webrtc_usbcam.arm64"
+        echo -e "${BLUE}💡 Using arm64 Holoscan-based Dockerfile${NC}"
+    else
+        echo -e "${BLUE}💡 Using x86_64 OpenCV-based Dockerfile${NC}"
+    fi
+    docker build -t vlm-surgical-agents:webrtc-usbcam -f "$REPO_PATH/docker/${dockerfile}" "$REPO_PATH"
     echo -e "${GREEN}✅ WebRTC USB Camera build completed${NC}"
 }
 
@@ -288,8 +295,36 @@ stop_containers() {
     echo -e "\n${YELLOW}🛑 Stopping containers: $containers${NC}"
     for container in $containers; do
         docker stop $container 2>/dev/null && echo -e "${GREEN}✅ Stopped $container${NC}" || echo -e "${YELLOW}⚠️  $container not running${NC}"
-        docker rm $container 2>/dev/null || true
+        docker rm -f $container 2>/dev/null || true
     done
+
+    # For webrtc_usbcam: wait until its port is actually released.
+    # Holoscan / V4L2 containers can leave zombie processes that hold the
+    # port even after docker stop/rm.
+    if [[ "$component" == "webrtc_usbcam" ]] || [[ -z "$component" ]]; then
+        local port=${WEBRTC_PORT:-8080}
+        local retries=0
+        while ss -tlnH "sport = :${port}" 2>/dev/null | grep -q LISTEN; do
+            if [ $retries -eq 0 ]; then
+                echo -e "${YELLOW}⏳ Waiting for port ${port} to be released...${NC}"
+            fi
+            retries=$((retries + 1))
+            if [ $retries -ge 10 ]; then
+                echo -e "${RED}⚠️  Port ${port} still in use after 10s — attempting force cleanup${NC}"
+                # Try to kill any leftover process holding the port
+                sudo fuser -k ${port}/tcp 2>/dev/null || true
+                sleep 2
+                if ss -tlnH "sport = :${port}" 2>/dev/null | grep -q LISTEN; then
+                    echo -e "${RED}❌ Port ${port} could not be freed. A reboot may be required.${NC}"
+                fi
+                break
+            fi
+            sleep 1
+        done
+        if [ $retries -gt 0 ] && ! ss -tlnH "sport = :${port}" 2>/dev/null | grep -q LISTEN; then
+            echo -e "${GREEN}✅ Port ${port} released${NC}"
+        fi
+    fi
 }
 
 # Function to run vLLM server
@@ -303,7 +338,7 @@ run_vllm() {
     fi
 
     # Set default GPU memory utilization if not provided
-    GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.25}
+    GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.5}
     echo -e "${BLUE}💡 Using GPU memory utilization: ${GPU_MEMORY_UTILIZATION}${NC}"
 
     # Set enforce eager mode if requested
@@ -516,23 +551,76 @@ run_webrtc_usbcam() {
     echo -e "${BLUE}💡 Using FPS: ${fps}${NC}"
     echo -e "${BLUE}💡 Using port: ${port}${NC}"
     
-    docker run -d \
-        --name vlm-surgical-webrtc-usbcam \
-        --net host \
-        --device /dev/video0:/dev/video${camera_index} \
-        -e CAMERA_INDEX=${camera_index} \
-        -e CAMERA_FPS=${fps} \
-        -e CAMERA_WIDTH=${width} \
-        -e CAMERA_HEIGHT=${height} \
-        -e WEBRTC_PORT=${port} \
-        --restart unless-stopped \
-        vlm-surgical-agents:webrtc-usbcam \
-        --host 0.0.0.0 \
-        --port ${port} \
-        --camera-index ${camera_index} \
-        --fps ${fps} \
-        --width ${width} \
-        --height ${height}
+    # Verify the camera device exists on the host
+    if [ ! -e "/dev/video${camera_index}" ]; then
+        echo -e "${RED}❌ Camera device /dev/video${camera_index} not found${NC}"
+        echo -e "${YELLOW}💡 Available video devices:${NC}"
+        ls -la /dev/video* 2>/dev/null || echo "  (none)"
+        return 1
+    fi
+
+    if [[ "$ARCH" == "aarch64" ]]; then
+        # arm64 (IGX / Jetson): Holoscan-based pipeline with GPU acceleration.
+        # Requires --privileged for V4L2 device access on composite USB cameras
+        # and --gpus all + NVIDIA_DRIVER_CAPABILITIES for CUDA format conversion.
+        echo -e "${BLUE}💡 Using arm64 Holoscan-based pipeline${NC}"
+
+        # Unbind USB audio driver from the camera's composite USB device.
+        # PipeWire/WirePlumber grabs the camera's built-in microphone interface,
+        # which blocks exclusive access to the video interface on composite USB
+        # devices.  Unbinding snd-usb-audio for the camera frees /dev/videoN.
+        local cam_usb_port
+        cam_usb_port=$(readlink -f /sys/class/video4linux/video${camera_index}/device/.. 2>/dev/null | xargs basename 2>/dev/null)
+        if [ -n "$cam_usb_port" ]; then
+            for d in /sys/bus/usb/drivers/snd-usb-audio/${cam_usb_port}:*; do
+                if [ -e "$d" ]; then
+                    local iface
+                    iface=$(basename "$d")
+                    echo -e "${YELLOW}💡 Unbinding USB audio interface ${iface} to free camera${NC}"
+                    echo "$iface" | sudo tee /sys/bus/usb/drivers/snd-usb-audio/unbind >/dev/null 2>&1
+                fi
+            done
+            sleep 1
+        fi
+
+        docker run -d \
+            --init \
+            --name vlm-surgical-webrtc-usbcam \
+            --net host \
+            --privileged \
+            --gpus all \
+            -e NVIDIA_DRIVER_CAPABILITIES=all \
+            --ulimit stack=33554432 \
+            -e CAMERA_INDEX=${camera_index} \
+            -e CAMERA_FPS=${fps} \
+            -e WEBRTC_PORT=${port} \
+            vlm-surgical-agents:webrtc-usbcam \
+            --source camera \
+            --camera-device /dev/video${camera_index} \
+            --no-serve-client \
+            --host 0.0.0.0 \
+            --port ${port}
+    else
+        # x86_64: OpenCV-based pipeline (lightweight, no GPU required).
+        echo -e "${BLUE}💡 Using x86_64 OpenCV-based pipeline${NC}"
+
+        docker run -d \
+            --init \
+            --name vlm-surgical-webrtc-usbcam \
+            --net host \
+            --group-add video \
+            --device /dev/video${camera_index}:/dev/video${camera_index} \
+            -e CAMERA_INDEX=${camera_index} \
+            -e CAMERA_FPS=${fps} \
+            -e WEBRTC_PORT=${port} \
+            --restart unless-stopped \
+            vlm-surgical-agents:webrtc-usbcam \
+            --host 0.0.0.0 \
+            --port ${port} \
+            --camera-index ${camera_index} \
+            --fps ${fps}
+    fi
+
     echo -e "${GREEN}✅ WebRTC USB Camera Server started on port ${port}${NC}"
     echo -e "${BLUE}📹 Access WebRTC endpoint at: http://localhost:${port}/offer${NC}"
 }
