@@ -284,14 +284,17 @@ async def main():
             logger.error(f"Error forwarding alert to UI: {e}", exc_info=True)
 
     # Auto-subscribe to all alert events published by agents
-    # Any event ending with "_alert" will be forwarded to the UI
+    # Any event ending with "_alert" will be forwarded to the UI.
+    # Subscribe to each distinct event name only once to avoid duplicate UI/TTS messages.
     alert_events_registered = 0
+    subscribed_alert_events = set()
     for agent_name in agent_names:
         metadata = registry.get_metadata(agent_name)
         if metadata and metadata.publishes_events:
             for event_name in metadata.publishes_events:
-                if event_name.endswith("_alert"):
+                if event_name.endswith("_alert") and event_name not in subscribed_alert_events:
                     message_bus.subscribe_to_event(event_name, forward_alert_to_ui)
+                    subscribed_alert_events.add(event_name)
                     logger.info(f"  ✓ Subscribed to alert: {event_name} (from {agent_name})")
                     alert_events_registered += 1
 
