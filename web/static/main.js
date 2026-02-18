@@ -566,6 +566,10 @@ document.addEventListener('DOMContentLoaded', function() {
           console.log('Setting video stream to video element');
           videoElement.srcObject = event.streams[0];
           console.log('Video stream received and set');
+          // Auto-play when WebRTC stream is attached (same behavior as uploaded video)
+          videoElement.play().catch((e) => {
+            console.warn('WebRTC video autoplay:', e);
+          });
         }
       });
 
