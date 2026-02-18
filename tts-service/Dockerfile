@@ -1,11 +1,13 @@
-# Use NVIDIA CUDA base image with Python
-FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
+# Use NVIDIA CUDA 12.8 base for Blackwell (sm_120) and newer GPUs; cu118 only supports up to sm_90
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 ENV CUDA_VISIBLE_DEVICES=0
+# Reduce GPU memory fragmentation and improve inference latency
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Install system dependencies and Python 3.10
 RUN apt-get update && apt-get install -y \
@@ -32,8 +34,9 @@ WORKDIR /app
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 
-# Install Python dependencies
+# PyTorch 2.7 with CUDA 12.8 for Blackwell (sm_120) and newer GPUs
 RUN pip3 install --no-cache-dir --upgrade pip && \
+    pip3 install --no-cache-dir torch==2.7.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128 && \
     pip3 install --no-cache-dir -r requirements.txt && \
     pip3 install --no-cache-dir espeak-phonemizer
 

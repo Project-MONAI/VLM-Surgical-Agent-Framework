@@ -13,14 +13,14 @@ A Text-to-Speech service built with FastAPI and Coqui TTS, containerized with Do
 ## Prerequisites
 
 - Docker and Docker Compose
-- NVIDIA GPU with CUDA support (tested with CUDA 11.8)
+- NVIDIA GPU with CUDA support (image uses CUDA 12.8—adds Blackwell support; also supports Ampere, Hopper, and earlier architectures)
 - NVIDIA Container Toolkit installed
 - At least 4GB of GPU memory recommended
 
 ## System Requirements
 
 - Ubuntu 22.04 or later
-- NVIDIA GPU with CUDA 11.8 support
+- NVIDIA GPU with CUDA 12.8 support (adds Blackwell; also supports Ampere, Hopper, and earlier)
 - Docker 20.10 or later
 - Docker Compose 2.0 or later
 - NVIDIA Container Toolkit 1.13 or later
@@ -105,6 +105,22 @@ pip install -r requirements.txt
 ```bash
 uvicorn app.main:app --reload
 ```
+
+## Performance
+
+The service is tuned for lower latency and better throughput:
+
+- **Non-blocking synthesis**: TTS inference runs in a dedicated thread pool so the API stays responsive and can serve health/other requests while generating speech.
+- **Inference mode**: Synthesis uses `torch.inference_mode()` to disable autograd and reduce overhead.
+- **TF32**: On Ampere+ GPUs (e.g. A100, RTX 30xx), TF32 is enabled for faster matmuls with no quality change.
+- **GPU build**: The Docker image installs PyTorch 2.7 with CUDA 12.8 (adds Blackwell support; also supports Ampere, Hopper, and earlier architectures); ensure `nvidia-docker` or Docker with GPU support is used when running.
+- **Memory**: `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is set to reduce GPU allocator fragmentation.
+
+For even faster responses you can:
+
+- Use a smaller/faster model (e.g. some single-speaker VITS or Tacotron2 variants).
+- Keep text segments short (e.g. sentence-level) to reduce per-request synthesis time.
+- Ensure the container is bound to a GPU (`--gpus all` or similar) and that no CPU-only PyTorch is installed.
 
 ## Troubleshooting
 

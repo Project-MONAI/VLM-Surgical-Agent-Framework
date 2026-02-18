@@ -9,9 +9,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import io
 import logging
+import wave
 import torch
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Any
 from TTS.utils.manage import ModelManager
 from TTS.utils.synthesizer import Synthesizer
@@ -32,8 +35,34 @@ import time
 
 DEFAULT_MODEL = "tts_models/en/ljspeech/vits"  # Changed to VITS for better quality
 MAX_LOADED_MODELS = 3  # Maximum number of models to keep in memory
+# Dedicated thread pool for TTS synthesis so blocking inference doesn't starve other tasks
+TTS_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tts_synth")
 
 logger = logging.getLogger(__name__)
+
+
+def _synthesize_sync(
+    tts: Synthesizer,
+    text: str,
+    speaker_name: Optional[str],
+    language: Optional[str],
+) -> bytes:
+    """Run TTS synthesis in a thread. Uses inference_mode for speed; returns WAV bytes."""
+    with torch.inference_mode():
+        # Synthesizer.tts(text, speaker, language) – single-speaker models ignore speaker/language
+        wav = tts.tts(text, speaker_name, language)
+    if not isinstance(wav, np.ndarray):
+        wav = np.array(wav)
+    wav = np.clip(wav, -1.0, 1.0)
+    wav_scaled = (wav * 32767).astype(np.int16)
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(22050)
+        wav_file.writeframes(wav_scaled.tobytes())
+    return wav_buffer.getvalue()
+
 
 class TTSManager:
     def __init__(self, models_dir: str = "/root/.local/share/tts", cache_dir: str = "/app/cache", use_cuda: bool = True):
@@ -57,6 +86,14 @@ class TTSManager:
         # Initialize model manager
         self.model_manager = ModelManager()
 
+        # Enable TF32 on Ampere+ GPUs for faster matmul (no quality loss for inference)
+        if self.use_cuda and torch.cuda.is_available():
+            try:
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+            except Exception:
+                pass
+
         # Load model list
         self.available_models = self.model_manager.list_models()
 
@@ -69,24 +106,40 @@ class TTSManager:
 
     def _initialize_default_model(self):
         """Initialize the default model if not already downloaded"""
-        try:
-            model_path = os.path.join(self.models_dir, DEFAULT_MODEL.replace('/', '--'))
-            if not os.path.exists(model_path):
-                self.logger.info(f"Downloading default model: {DEFAULT_MODEL}")
-                self.model_manager.download_model(DEFAULT_MODEL)
-                self.logger.info("Default model downloaded successfully")
+        model_path = os.path.join(self.models_dir, DEFAULT_MODEL.replace('/', '--'))
+        if not os.path.exists(model_path):
+            self.logger.info(f"Downloading default model: {DEFAULT_MODEL}")
+            self.model_manager.download_model(DEFAULT_MODEL)
+            self.logger.info("Default model downloaded successfully")
 
-            # Initialize synthesizer with the default model
-            self.synthesizer = Synthesizer(
-                tts_checkpoint=os.path.join(model_path, "model_file.pth"),
-                tts_config_path=os.path.join(model_path, "config.json"),
-                use_cuda=self.use_cuda
-            )
-            self.current_model = DEFAULT_MODEL
-            self.logger.info("Default model initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Error initializing default model: {e}")
-            raise
+        use_cuda = self.use_cuda
+        for attempt in range(2):
+            try:
+                self.synthesizer = Synthesizer(
+                    tts_checkpoint=os.path.join(model_path, "model_file.pth"),
+                    tts_config_path=os.path.join(model_path, "config.json"),
+                    use_cuda=use_cuda
+                )
+                self.current_model = DEFAULT_MODEL
+                if not use_cuda and self.use_cuda:
+                    self.logger.warning("GPU init failed; running on CPU (e.g. unsupported GPU like Blackwell on older PyTorch)")
+                self.logger.info("Default model initialized successfully")
+                return
+            except RuntimeError as e:
+                err_msg = str(e).lower()
+                if attempt == 0 and use_cuda and ("no kernel image" in err_msg or "cuda error" in err_msg):
+                    self.logger.warning(f"GPU not supported for this PyTorch build ({e}); falling back to CPU")
+                    use_cuda = False
+                    self.use_cuda = False
+                    self.device = "cpu"
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    continue
+                self.logger.error(f"Error initializing default model: {e}")
+                raise
+            except Exception as e:
+                self.logger.error(f"Error initializing default model: {e}")
+                raise
 
     def list_models(self) -> List[ModelInfo]:
         """List all available models with their status"""
@@ -228,83 +281,72 @@ class TTSManager:
             logger.error(f"Error downloading model {model_name}: {str(e)}", exc_info=True)
             raise
 
+    async def _load_model_impl(self, model_name: str) -> Optional[Synthesizer]:
+        """Load a model into memory. Caller must hold model_load_lock when use_cuda/loaded_models may be shared."""
+        if model_name in self.loaded_models:
+            self.loaded_models[model_name]['last_used'] = asyncio.get_event_loop().time()
+            return self.loaded_models[model_name]['synthesizer']
+
+        logger.info(f"Loading model: {model_name}")
+
+        if len(self.loaded_models) >= MAX_LOADED_MODELS:
+            self._unload_least_recently_used()
+
+        model_path = os.path.join('/root/.local/share/tts', model_name.replace('/', '--'))
+        if not os.path.exists(model_path):
+            logger.info(f"Downloading model: {model_name}")
+            await self.download_model(model_name)
+
+        files = os.listdir(model_path)
+        logger.info(f"Files available for model {model_name}: {files}")
+
+        if not files:
+            raise FileNotFoundError(f"No files found in model directory {model_path}")
+
+        model_file = None
+        config_file = None
+        for file in files:
+            if file.endswith('.pth') or file.endswith('.pt'):
+                model_file = file
+            elif file.endswith('.json'):
+                config_file = file
+
+        if not model_file:
+            for root, _, filenames in os.walk(model_path):
+                for filename in filenames:
+                    if filename.endswith('.pth') or filename.endswith('.pt'):
+                        model_file = os.path.join(root, filename)
+                        break
+                if model_file:
+                    break
+
+        if not model_file:
+            raise FileNotFoundError(f"No model file found in {model_path}")
+
+        if config_file:
+            synthesizer = Synthesizer(
+                tts_checkpoint=os.path.join(model_path, model_file),
+                tts_config_path=os.path.join(model_path, config_file),
+                use_cuda=self.use_cuda
+            )
+        else:
+            synthesizer = Synthesizer(
+                tts_checkpoint=os.path.join(model_path, model_file),
+                use_cuda=self.use_cuda
+            )
+
+        self.loaded_models[model_name] = {
+            'synthesizer': synthesizer,
+            'last_used': asyncio.get_event_loop().time()
+        }
+        self.current_model = model_name
+        logger.info(f"Model {model_name} loaded successfully")
+        return synthesizer
+
     async def _load_model(self, model_name: str) -> Optional[Synthesizer]:
         """Load a model into memory with locking to prevent race conditions"""
         async with self.model_load_lock:
-            if model_name in self.loaded_models:
-                # Update LRU tracking
-                self.loaded_models[model_name]['last_used'] = asyncio.get_event_loop().time()
-                return self.loaded_models[model_name]['synthesizer']
-
-            try:
-                logger.info(f"Loading model: {model_name}")
-
-                # Check if we need to unload some models
-                if len(self.loaded_models) >= MAX_LOADED_MODELS:
-                    self._unload_least_recently_used()
-
-                # Check if model exists and download if needed
-                model_path = os.path.join('/root/.local/share/tts', model_name.replace('/', '--'))
-                if not os.path.exists(model_path):
-                    logger.info(f"Downloading model: {model_name}")
-                    await self.download_model(model_name)
-
-                # List all files in the model directory
-                files = os.listdir(model_path)
-                logger.info(f"Files available for model {model_name}: {files}")
-
-                if not files:
-                    raise FileNotFoundError(f"No files found in model directory {model_path}")
-
-                # Find model and config files
-                model_file = None
-                config_file = None
-
-                for file in files:
-                    if file.endswith('.pth') or file.endswith('.pt'):
-                        model_file = file
-                    elif file.endswith('.json'):
-                        config_file = file
-
-                if not model_file:
-                    # Try to find in subdirectories
-                    for root, _, filenames in os.walk(model_path):
-                        for filename in filenames:
-                            if filename.endswith('.pth') or filename.endswith('.pt'):
-                                model_file = os.path.join(root, filename)
-                                break
-                        if model_file:
-                            break
-
-                if not model_file:
-                    raise FileNotFoundError(f"No model file found in {model_path}")
-
-                # Initialize synthesizer with explicit paths
-                if config_file:
-                    synthesizer = Synthesizer(
-                        tts_checkpoint=os.path.join(model_path, model_file),
-                        tts_config_path=os.path.join(model_path, config_file),
-                        use_cuda=self.use_cuda
-                    )
-                else:
-                    synthesizer = Synthesizer(
-                        tts_checkpoint=os.path.join(model_path, model_file),
-                        use_cuda=self.use_cuda
-                    )
-
-                # Store model with metadata
-                self.loaded_models[model_name] = {
-                    'synthesizer': synthesizer,
-                    'last_used': asyncio.get_event_loop().time()
-                }
-
-                self.current_model = model_name
-                logger.info(f"Model {model_name} loaded successfully")
-                return synthesizer
-
-            except Exception as e:
-                logger.error(f"Error loading model {model_name}: {str(e)}", exc_info=True)
-                raise
+            return await self._load_model_impl(model_name)
 
     def _unload_least_recently_used(self):
         """Unload the least recently used model"""
@@ -368,50 +410,51 @@ class TTSManager:
                         speaker_name = "0"
                 logger.info(f"Using speaker: {speaker_name} for multi-speaker model")
 
-            # Generate speech
+            # Run blocking synthesis in thread pool (avoids blocking event loop, uses inference_mode)
             try:
                 logger.info("Starting speech generation...")
-                wav = tts.tts(text, speaker_name, language)
-                logger.info("Speech generation completed")
-            except Exception as e:
-                logger.error(f"Error during TTS generation: {str(e)}", exc_info=True)
-                raise ValueError(f"Failed to generate speech: {str(e)}")
-
-            # Convert to bytes with explicit numpy handling
-            try:
-                # Ensure wav is a numpy array
-                if not isinstance(wav, np.ndarray):
-                    wav = np.array(wav)
-
-                # Scale and convert to int16
-                wav_scaled = (wav * 32767).astype(np.int16)
-
-                # Create proper WAV file format with headers
-                import io
-                import wave
-
-                # Create a BytesIO buffer to write WAV data
-                wav_buffer = io.BytesIO()
-
-                # Write WAV file with proper headers
-                with wave.open(wav_buffer, 'wb') as wav_file:
-                    # Set WAV parameters
-                    wav_file.setnchannels(1)  # Mono
-                    wav_file.setsampwidth(2)  # 16-bit
-                    wav_file.setframerate(22050)  # 22.05 kHz sample rate
-                    wav_file.writeframes(wav_scaled.tobytes())
-
-                # Get the complete WAV file as bytes
-                wav_bytes = wav_buffer.getvalue()
-                wav_buffer.close()
-
+                wav_bytes = await asyncio.get_event_loop().run_in_executor(
+                    TTS_EXECUTOR,
+                    _synthesize_sync,
+                    tts,
+                    text,
+                    speaker_name,
+                    language,
+                )
                 generation_time = time.time() - start_time
                 logger.info(f"Speech generated successfully in {generation_time:.2f} seconds")
-
                 return wav_bytes
             except Exception as e:
-                logger.error(f"Error converting wav to bytes: {str(e)}", exc_info=True)
-                raise ValueError(f"Failed to convert audio to bytes: {str(e)}")
+                err_msg = str(e).lower()
+                if self.use_cuda and ("no kernel image" in err_msg or "cuda error" in err_msg):
+                    logger.warning(
+                        "GPU kernel not supported (e.g. Blackwell on old PyTorch); falling back to CPU for model %s",
+                        model_name,
+                    )
+                    async with self.model_load_lock:
+                        self.use_cuda = False
+                        self.device = "cpu"
+                        self.loaded_models.clear()
+                        self.synthesizer = None
+                        self.current_model = None
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        tts = await self._load_model_impl(model_name)
+                    if not tts:
+                        raise ValueError(f"Failed to load model {model_name} on CPU for fallback") from e
+                    wav_bytes = await asyncio.get_event_loop().run_in_executor(
+                        TTS_EXECUTOR,
+                        _synthesize_sync,
+                        tts,
+                        text,
+                        speaker_name,
+                        language,
+                    )
+                    generation_time = time.time() - start_time
+                    logger.info(f"Speech generated on CPU in {generation_time:.2f} seconds")
+                    return wav_bytes
+                logger.error(f"Error during TTS generation or conversion: {str(e)}", exc_info=True)
+                raise ValueError(f"Failed to generate speech: {str(e)}")
 
         except ValueError as e:
             logger.error(f"Value error in speech generation: {str(e)}")

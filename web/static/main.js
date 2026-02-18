@@ -748,14 +748,8 @@ function handleServerMessage(message) {
       addNote(message.agent_response, message.original_user_input || message.user_input || '');
     }
     else {
-      // Regular response - just add to chat; include agent name if provided
+      // Regular response - add to chat (TTS is triggered only when message is actually added; see addMessageToChat)
       addMessageToChat(message.agent_response, 'agent', message.agent_name);
-
-      // Handle TTS for agent responses if enabled
-      if (window.isTtsEnabled) {
-        generateSpeech(message.agent_response);
-      }
-
     }
 
     // Update phase if annotation includes phase info
@@ -2007,6 +2001,11 @@ function addMessageToChat(message, sender = 'user', agentName) {
   chatHistoryContainer.appendChild(messageDiv);
   _pushRecent(sender, message);
   chatHistoryContainer.scrollTop = chatHistoryContainer.scrollHeight;
+
+  // TTS only for content we actually added to chat (agent messages); duplicates are already skipped above
+  if (sender === 'agent' && window.isTtsEnabled && typeof generateSpeech === 'function') {
+    generateSpeech(message);
+  }
 }
 
 function onChatHistoryReset() {
