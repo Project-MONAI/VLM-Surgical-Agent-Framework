@@ -29,8 +29,18 @@ export PATH="$HOME/.local/bin:$PATH"
 ARCH=$(uname -m)
 echo -e "${BLUE}🔍 Detected architecture: $ARCH${NC}"
 
-# Detect if running on IGX Thor
+# Detect if running on IGX Thor or DGX Spark (NVIDIA SoC platforms using NGC vLLM image)
 IS_IGX_THOR=false
+IS_DGX_SPARK=false
+# Detect if running on DGX Spark
+if [ -f /etc/dgx-release ]; then
+    DGX_NAME=$(grep -oP 'DGX_NAME="\K[^"]+' /etc/dgx-release 2>/dev/null)
+    if [[ "$DGX_NAME" == "DGX Spark" ]]; then
+        IS_DGX_SPARK=true
+        echo -e "${BLUE}🔍 Detected DGX Spark device${NC}"
+    fi
+fi
+# IGX Thor: device-tree
 if [ -f /proc/device-tree/model ]; then
     DEVICE_MODEL=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0')
     if [[ "$DEVICE_MODEL" =~ "Thor" ]] || [[ "$DEVICE_MODEL" =~ "IGX" ]]; then
@@ -38,14 +48,17 @@ if [ -f /proc/device-tree/model ]; then
         echo -e "${BLUE}🔍 Detected IGX Thor device${NC}"
     fi
 fi
+# Use NGC image for either platform (same run args: vllm serve, UMA-friendly)
+USE_NVIDIA_VLLM_IMAGE=false
+[[ "$IS_IGX_THOR" == true || "$IS_DGX_SPARK" == true ]] && USE_NVIDIA_VLLM_IMAGE=true
 
 # Set vLLM image based on architecture and platform
 if [[ "$ARCH" == "x86_64" ]]; then
     VLLM_IMAGE="vllm/vllm-openai:latest"
     echo -e "${BLUE}💡 Using official vLLM image for x86_64: $VLLM_IMAGE${NC}"
-elif [[ "$IS_IGX_THOR" == true ]]; then
+elif [[ "$USE_NVIDIA_VLLM_IMAGE" == true ]]; then
     VLLM_IMAGE="nvcr.io/nvidia/vllm:25.11-py3"
-    echo -e "${BLUE}💡 Using NVIDIA NGC vLLM image for IGX Thor: $VLLM_IMAGE${NC}"
+    echo -e "${BLUE}💡 Using NVIDIA NGC vLLM image for IGX Thor / DGX Spark: $VLLM_IMAGE${NC}"
 elif [[ "$ARCH" == "aarch64" ]]; then
     VLLM_IMAGE="vlm-surgical-agents:vllm-openai-v0.8.3-dgpu"
     echo -e "${BLUE}💡 Will build custom vLLM image for aarch64: $VLLM_IMAGE${NC}"
@@ -182,8 +195,8 @@ build_vllm() {
         echo -e "${YELLOW}📥 Pulling official vLLM image for x86_64...${NC}"
         docker pull $VLLM_IMAGE
         echo -e "${GREEN}✅ vLLM image ready${NC}"
-    elif [[ "$IS_IGX_THOR" == true ]]; then
-        echo -e "${YELLOW}📥 Pulling NVIDIA NGC vLLM image for IGX Thor...${NC}"
+    elif [[ "$USE_NVIDIA_VLLM_IMAGE" == true ]]; then
+        echo -e "${YELLOW}📥 Pulling NVIDIA NGC vLLM image for IGX Thor / DGX Spark...${NC}"
         docker pull $VLLM_IMAGE
         echo -e "${GREEN}✅ vLLM image ready${NC}"
     else
@@ -343,14 +356,14 @@ run_vllm() {
         -e VLLM_URL \
         --restart unless-stopped \
         $VLLM_IMAGE \
-        $( [[ "$IS_IGX_THOR" == true ]] && echo "vllm serve $container_model_path" || echo "--model $model_name" ) \
+        $( [[ "$USE_NVIDIA_VLLM_IMAGE" == true ]] && echo "vllm serve $container_model_path" || echo "--model $model_name" ) \
         --served-model-name surgical-vlm \
         --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION} \
-        $( [[ "$IS_IGX_THOR" != true ]] && echo "${ENFORCE_EAGER_FLAG}" ) \
+        $( [[ "$USE_NVIDIA_VLLM_IMAGE" != true ]] && echo "${ENFORCE_EAGER_FLAG}" ) \
         --max-model-len 4096 \
         --max-num-seqs 8 \
-        $( [[ "$IS_IGX_THOR" != true ]] && echo "--load-format bitsandbytes" ) \
-        $( [[ "$IS_IGX_THOR" != true ]] && echo "--quantization bitsandbytes" ) \
+        $( [[ "$USE_NVIDIA_VLLM_IMAGE" != true ]] && echo "--load-format bitsandbytes" ) \
+        $( [[ "$USE_NVIDIA_VLLM_IMAGE" != true ]] && echo "--quantization bitsandbytes" ) \
         $( [[ -n "${served_model_name}" ]] && echo --served-model-name "${served_model_name}" )
     echo -e "${GREEN}✅ vLLM Server started${NC}"
 }
