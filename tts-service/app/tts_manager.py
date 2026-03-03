@@ -78,6 +78,8 @@ class TTSManager:
         # Initialize loaded models dictionary with LRU tracking
         self.loaded_models: Dict[str, Dict[str, Any]] = {}
         self.model_load_lock = asyncio.Lock()
+        # Serialize synthesis so only one request generates audio at a time (prevents overlapping voice)
+        self._synthesis_lock = asyncio.Lock()
 
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -410,38 +412,10 @@ class TTSManager:
                         speaker_name = "0"
                 logger.info(f"Using speaker: {speaker_name} for multi-speaker model")
 
-            # Run blocking synthesis in thread pool (avoids blocking event loop, uses inference_mode)
-            try:
-                logger.info("Starting speech generation...")
-                wav_bytes = await asyncio.get_event_loop().run_in_executor(
-                    TTS_EXECUTOR,
-                    _synthesize_sync,
-                    tts,
-                    text,
-                    speaker_name,
-                    language,
-                )
-                generation_time = time.time() - start_time
-                logger.info(f"Speech generated successfully in {generation_time:.2f} seconds")
-                return wav_bytes
-            except Exception as e:
-                err_msg = str(e).lower()
-                if self.use_cuda and ("no kernel image" in err_msg or "cuda error" in err_msg):
-                    logger.warning(
-                        "GPU kernel not supported (e.g. Blackwell on old PyTorch); falling back to CPU for model %s",
-                        model_name,
-                    )
-                    async with self.model_load_lock:
-                        self.use_cuda = False
-                        self.device = "cpu"
-                        self.loaded_models.clear()
-                        self.synthesizer = None
-                        self.current_model = None
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        tts = await self._load_model_impl(model_name)
-                    if not tts:
-                        raise ValueError(f"Failed to load model {model_name} on CPU for fallback") from e
+            # Run blocking synthesis in thread pool; only one at a time to avoid overlapping audio
+            async with self._synthesis_lock:
+                try:
+                    logger.info("Starting speech generation...")
                     wav_bytes = await asyncio.get_event_loop().run_in_executor(
                         TTS_EXECUTOR,
                         _synthesize_sync,
@@ -451,17 +425,46 @@ class TTSManager:
                         language,
                     )
                     generation_time = time.time() - start_time
-                    logger.info(f"Speech generated on CPU in {generation_time:.2f} seconds")
+                    logger.info(f"Speech generated successfully in {generation_time:.2f} seconds")
                     return wav_bytes
-                logger.error(f"Error during TTS generation or conversion: {str(e)}", exc_info=True)
-                raise ValueError(f"Failed to generate speech: {str(e)}")
+                except Exception as e:
+                    err_msg = str(e).lower()
+                    if self.use_cuda and ("no kernel image" in err_msg or "cuda error" in err_msg):
+                        logger.warning(
+                            "GPU kernel not supported (e.g. Blackwell on old PyTorch); falling back to CPU for model %s",
+                            model_name,
+                        )
+                        async with self.model_load_lock:
+                            self.use_cuda = False
+                            self.device = "cpu"
+                            self.loaded_models.clear()
+                            self.synthesizer = None
+                            self.current_model = None
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                            tts = await self._load_model_impl(model_name)
+                        if not tts:
+                            raise ValueError(f"Failed to load model {model_name} on CPU for fallback") from e
+                        wav_bytes = await asyncio.get_event_loop().run_in_executor(
+                            TTS_EXECUTOR,
+                            _synthesize_sync,
+                            tts,
+                            text,
+                            speaker_name,
+                            language,
+                        )
+                        generation_time = time.time() - start_time
+                        logger.info(f"Speech generated on CPU in {generation_time:.2f} seconds")
+                        return wav_bytes
+                    logger.error(f"Error during TTS generation or conversion: {str(e)}", exc_info=True)
+                    raise ValueError(f"Failed to generate speech: {str(e)}") from e
 
         except ValueError as e:
             logger.error(f"Value error in speech generation: {str(e)}")
             raise
         except Exception as e:
             logger.error(f"Unexpected error in speech generation: {str(e)}", exc_info=True)
-            raise ValueError(f"Unexpected error during speech generation: {str(e)}")
+            raise ValueError(f"Unexpected error during speech generation: {str(e)}") from e
 
     def unload_model(self, model_name: str) -> None:
         """Unload a model from memory"""
