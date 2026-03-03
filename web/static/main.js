@@ -3389,6 +3389,10 @@ window.totalChunks = 0;         // Total number of chunks in current request
 window.isProcessingChunks = false; // Flag to track if we're processing chunks
 window.pendingChunks = new Map(); // Track pending chunks waiting for audio
 window.chunkTimeouts = new Map(); // Track chunk timeouts
+window.currentTtsGenerationId = 0;  // Increment on each utterance so we ignore stale responses
+window.ttsAbortController = null;   // Abort in-flight REST requests when starting next utterance
+window.ttsUtteranceQueue = [];      // Queue of text to speak; next plays after current finishes
+window.currentUtteranceAllChunksReceived = false; // True when all chunks for current utterance are in audio queue
 const MAX_RECONNECT_ATTEMPTS = 3;
 const TTS_WS_URL = 'ws://localhost:8082/ws/tts'; // Direct connection to TTS service
 const CHUNK_TIMEOUT_MS = 30000; // 30 seconds timeout per chunk
@@ -3600,27 +3604,28 @@ function connectTTSWebSocket() {
 
         // If we're processing chunks, add to queue; otherwise play directly
         if (window.isProcessingChunks) {
+          const currentChunkKey = `chunk_${window.currentChunkIndex}`;
+          const chunkData = window.pendingChunks.get(currentChunkKey);
+          const generationMatches = chunkData && chunkData.generationId === window.currentTtsGenerationId;
+          if (!chunkData || !generationMatches) {
+            return; // Stale response - discard to avoid overlapping voice
+          }
+          window.pendingChunks.delete(currentChunkKey);
+
+          // Clear timeout for this chunk
+          if (window.chunkTimeouts.has(currentChunkKey)) {
+            clearTimeout(window.chunkTimeouts.get(currentChunkKey));
+            window.chunkTimeouts.delete(currentChunkKey);
+          }
+
           await addToAudioQueue(arrayBuffer);
 
-          // Check if we have a pending chunk that's waiting for this audio
-          // Use the current chunk index to find the pending chunk
-          const currentChunkKey = `chunk_${window.currentChunkIndex}`;
-          if (window.pendingChunks.has(currentChunkKey)) {
-            const chunkData = window.pendingChunks.get(currentChunkKey);
-            window.pendingChunks.delete(currentChunkKey);
-
-            // Clear timeout for this chunk
-            if (window.chunkTimeouts.has(currentChunkKey)) {
-              clearTimeout(window.chunkTimeouts.get(currentChunkKey));
-              window.chunkTimeouts.delete(currentChunkKey);
-            }
-
-            // Move to next chunk
-            window.currentChunkIndex++;
-
-            // Process next chunk
-            processNextChunk(chunkData.chunks);
+          window.currentChunkIndex++;
+          if (window.currentChunkIndex >= chunkData.chunks.length) {
+            window.currentUtteranceAllChunksReceived = true;
           }
+
+          processNextChunk(chunkData.chunks);
         } else {
           await playAudioData(arrayBuffer);
         }
@@ -3761,6 +3766,10 @@ async function addToAudioQueue(arrayBuffer) {
 async function playNextFromQueue() {
   if (window.audioQueue.length === 0) {
     window.isPlayingTTS = false;
+    if (window.currentUtteranceAllChunksReceived) {
+      window.currentUtteranceAllChunksReceived = false;
+      startNextUtteranceFromQueue();
+    }
     return;
   }
 
@@ -3892,7 +3901,9 @@ function stopCurrentTTS() {
 
   // Clear pending chunks and timeouts
   window.pendingChunks.clear();
-  window.chunkTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
+  window.chunkTimeouts.forEach(timeoutId => {
+    clearTimeout(timeoutId);
+  });
   window.chunkTimeouts.clear();
 
   // Clear audio queue
@@ -3919,37 +3930,71 @@ function stopCurrentTTS() {
 
 // Reset all TTS state and stop any audio
 function resetTTSState() {
-  // Stop current audio
   stopCurrentTTS();
 
-  // Clear debounce timer
   if (window.ttsDebounceTimer) {
     clearTimeout(window.ttsDebounceTimer);
     window.ttsDebounceTimer = null;
   }
 
-  // Reset chunked processing state
   window.currentChunkIndex = 0;
   window.totalChunks = 0;
   window.isProcessingChunks = false;
+  window.currentUtteranceAllChunksReceived = false;
+  window.ttsUtteranceQueue = [];
 
-  // Clear pending chunks and timeouts
   window.pendingChunks.clear();
-  window.chunkTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
+  window.chunkTimeouts.forEach(timeoutId => {
+    clearTimeout(timeoutId);
+  });
   window.chunkTimeouts.clear();
 
-  // Clear audio queue
   clearAudioQueue();
 }
 
-// Generate speech from text with chunked processing for better latency
+// Start the next utterance from the queue (only if none is in progress). Called when queue is non-empty
+// and either we're idle or we've just finished playing the current utterance.
+function startNextUtteranceFromQueue() {
+  if (window.ttsUtteranceQueue.length === 0) return;
+  if (window.isProcessingChunks) return; // Still receiving chunks for current utterance
+
+  const text = window.ttsUtteranceQueue.shift();
+
+  const ttsService = document.getElementById('ttsService');
+  const ttsServiceValue = ttsService ? ttsService.value : 'local';
+  if (ttsServiceValue === 'local') {
+    if (!window.ttsWebSocket || window.ttsWebSocket.readyState !== WebSocket.OPEN) {
+      console.warn('TTS WebSocket not connected. Deferring utterance.');
+      window.ttsUtteranceQueue.unshift(text); // Put back
+      return;
+    }
+  }
+
+  window.currentTtsGenerationId = (window.currentTtsGenerationId || 0) + 1;
+  window.ttsAbortController = new AbortController(); // No abort of previous; that utterance is done
+  window.currentUtteranceAllChunksReceived = false;
+
+  const chunks = splitTextIntoChunks(text);
+  if (chunks.length === 0) {
+    startNextUtteranceFromQueue(); // Skip empty and try next
+    return;
+  }
+
+  window.currentChunkIndex = 0;
+  window.totalChunks = chunks.length;
+  window.isProcessingChunks = true;
+
+  console.log(`Starting chunked TTS for queued utterance: ${chunks.length} chunks`);
+  processNextChunk(chunks);
+}
+
+// Generate speech from text: queue it and play after current utterance finishes (no overlap)
 function generateSpeech(text) {
   if (!text || !window.isTtsEnabled) return;
 
   const ttsService = document.getElementById('ttsService');
   const ttsServiceValue = ttsService ? ttsService.value : 'local';
 
-  // Check connection for local TTS service
   if (ttsServiceValue === 'local') {
     if (!window.ttsWebSocket || window.ttsWebSocket.readyState !== WebSocket.OPEN) {
       console.warn('TTS WebSocket not connected. Please check connection status.');
@@ -3958,30 +4003,13 @@ function generateSpeech(text) {
     }
   }
 
-  // Clear any existing debounce timer (for cleanup)
   if (window.ttsDebounceTimer) {
     clearTimeout(window.ttsDebounceTimer);
     window.ttsDebounceTimer = null;
   }
 
-  // Stop any currently playing TTS audio and clear queue
-  stopCurrentTTS();
-  clearAudioQueue();
-
-  // Split text into chunks for better latency
-  const chunks = splitTextIntoChunks(text);
-
-  if (chunks.length === 0) return;
-
-  // Initialize chunk processing state
-  window.currentChunkIndex = 0;
-  window.totalChunks = chunks.length;
-  window.isProcessingChunks = true;
-
-  console.log(`Starting chunked TTS processing: ${chunks.length} chunks`);
-
-  // Process chunks sequentially
-  processNextChunk(chunks);
+  window.ttsUtteranceQueue.push(text);
+  startNextUtteranceFromQueue();
 }
 
 // Process the next chunk in the sequence
@@ -3994,8 +4022,8 @@ function processNextChunk(chunks) {
   }
 
   if (!window.isProcessingChunks || window.currentChunkIndex >= chunks.length) {
-    // All chunks processed
     window.isProcessingChunks = false;
+    window.currentUtteranceAllChunksReceived = true; // So when playback drains we start next utterance
     console.log('All TTS chunks processed');
     return;
   }
@@ -4043,7 +4071,6 @@ function performChunkedWebSocketTTSRequest(chunk, chunks) {
   const ttsModel = document.getElementById('ttsModel');
   const modelName = ttsModel ? ttsModel.value : 'tts_models/en/ljspeech/vits';
 
-  // Format message to match TTS service WebSocket API
   const request = {
     text: chunk,
     model: modelName,
@@ -4052,19 +4079,22 @@ function performChunkedWebSocketTTSRequest(chunk, chunks) {
   };
 
   try {
-    // Mark this chunk as pending
     const chunkKey = `chunk_${window.currentChunkIndex}`;
-    window.pendingChunks.set(chunkKey, { chunks: chunks, timestamp: Date.now() });
+    window.pendingChunks.set(chunkKey, {
+      chunks: chunks,
+      timestamp: Date.now(),
+      generationId: window.currentTtsGenerationId
+    });
 
     // Set timeout for this chunk
+    const generationIdForTimeout = window.currentTtsGenerationId;
     const timeoutId = setTimeout(() => {
+      if (generationIdForTimeout !== window.currentTtsGenerationId) return; // Stale run
       console.error(`Chunk ${window.currentChunkIndex} timed out`);
 
-      // Remove from pending chunks
       window.pendingChunks.delete(chunkKey);
       window.chunkTimeouts.delete(chunkKey);
 
-      // Move to next chunk even if this one failed
       window.currentChunkIndex++;
       processNextChunk(chunks);
     }, CHUNK_TIMEOUT_MS);
@@ -4098,6 +4128,9 @@ function performChunkedRestTTSRequest(chunk, chunks) {
   const ttsService = document.getElementById('ttsService');
   const ttsServiceValue = ttsService ? ttsService.value : 'local';
 
+  const generationId = window.currentTtsGenerationId;
+  const signal = window.ttsAbortController ? window.ttsAbortController.signal : undefined;
+
   let requestData = {
     text: chunk,
     tts_service: ttsServiceValue,
@@ -4110,16 +4143,20 @@ function performChunkedRestTTSRequest(chunk, chunks) {
     requestData.api_key = apiKeyInput ? apiKeyInput.value : '';
   }
 
-  // Request TTS from server
+  // Request TTS from server (signal allows cancelling this request if TTS is reset)
   fetch('/api/tts', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(requestData)
+    body: JSON.stringify(requestData),
+    signal: signal
   })
   .then(response => response.json())
   .then(async (data) => {
+    // Ignore response if a new generation started (avoid overlapping voice)
+    if (generationId !== window.currentTtsGenerationId) return;
+
     if (data.tts_base64) {
       // Convert base64 to arrayBuffer and add to queue
       const audioFormat = ttsServiceValue === 'elevenlabs' ? 'audio/mp3' : 'audio/wav';
@@ -4131,21 +4168,25 @@ function performChunkedRestTTSRequest(chunk, chunks) {
 
       await addToAudioQueue(bytes.buffer);
 
-      // Move to next chunk
       window.currentChunkIndex++;
-
-      // Process next chunk
+      if (window.currentChunkIndex >= window.totalChunks) {
+        window.currentUtteranceAllChunksReceived = true;
+      }
       processNextChunk(chunks);
     } else {
       console.error('No audio data received from TTS service for chunk', window.currentChunkIndex);
-      // Continue with next chunk even if this one failed
       window.currentChunkIndex++;
+      if (window.currentChunkIndex >= window.totalChunks) {
+        window.currentUtteranceAllChunksReceived = true;
+      }
       processNextChunk(chunks);
     }
   })
   .catch(error => {
+    if (error.name === 'AbortError') return; // New speech started, ignore
     console.error('Error with chunked TTS request:', error);
-    // Continue with next chunk even if this one failed
+    // Continue with next chunk even if this one failed (only if same generation)
+    if (generationId !== window.currentTtsGenerationId) return;
     window.currentChunkIndex++;
     processNextChunk(chunks);
   });
