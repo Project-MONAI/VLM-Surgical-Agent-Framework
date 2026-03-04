@@ -168,6 +168,9 @@ class Agent(ABC):
             or "http://localhost:8000/v1"
         )
         self.tools = self.agent_settings.get('tools', {})
+
+        self.use_responses_api = bool(self.agent_settings.get("use_responses_api", True))
+
         self._logger.debug(
             f"Agent config loaded. llm_url={self.llm_url}, model_name={self.model_name}"
         )
@@ -345,6 +348,8 @@ class Agent(ABC):
 
             self._logger.debug("Multimodal request via Responses API (%s)…", self.model_name)
             try:
+                if not self.use_responses_api:
+                    raise RuntimeError("Responses API disabled by config")
                 result = self.client.responses.create(**req)
                 answer = getattr(result, "output_text", None) or ""
                 if not answer:
