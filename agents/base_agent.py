@@ -35,6 +35,8 @@ class Agent(ABC):
     """
 
     _llm_lock = Lock()
+    # Once Responses API fails for multimodal, skip it for subsequent calls (same process).
+    _responses_api_unavailable: bool = False
 
     def __init__(self, settings_path, response_handler, agent_key=None, message_bus=None, get_session_id=None):
         self._logger = logging.getLogger(f"{__name__}.{type(self).__name__}")
@@ -343,31 +345,35 @@ class Agent(ABC):
             elif extra_body is not None:
                 req["extra_body"] = extra_body
 
-            self._logger.debug("Multimodal request via Responses API (%s)…", self.model_name)
-            try:
-                result = self.client.responses.create(**req)
-                answer = getattr(result, "output_text", None) or ""
-                if not answer:
-                    # Generic fallback parsing
-                    data = result.model_dump() if hasattr(result, "model_dump") else None
-                    if isinstance(data, dict):
-                        if "output_text" in data:
-                            answer = data["output_text"]
-                        elif isinstance(data.get("output"), list) and data["output"]:
-                            first = data["output"][0]
-                            if isinstance(first, dict) and isinstance(first.get("content"), list) and first["content"]:
-                                c0 = first["content"][0]
-                                if isinstance(c0, dict):
-                                    answer = c0.get("text", "")
-            except Exception as e:
-                # Fallback to chat.completions (older path)
-                # Sanitize error message to avoid logging massive base64 images
-                error_msg = str(e)
-                if len(error_msg) > 500:
-                    error_msg = error_msg[:500] + "... (truncated)"
-                self._logger.warning(
-                    f"Responses API failed for multimodal: {error_msg}. Falling back to chat.completions."
-                )
+            if not Agent._responses_api_unavailable:
+                self._logger.debug("Multimodal request via Responses API (%s)…", self.model_name)
+                try:
+                    result = self.client.responses.create(**req)
+                    answer = getattr(result, "output_text", None) or ""
+                    if not answer:
+                        # Generic fallback parsing
+                        data = result.model_dump() if hasattr(result, "model_dump") else None
+                        if isinstance(data, dict):
+                            if "output_text" in data:
+                                answer = data["output_text"]
+                            elif isinstance(data.get("output"), list) and data["output"]:
+                                first = data["output"][0]
+                                if isinstance(first, dict) and isinstance(first.get("content"), list) and first["content"]:
+                                    c0 = first["content"][0]
+                                    if isinstance(c0, dict):
+                                        answer = c0.get("text", "")
+                except Exception as e:
+                    Agent._responses_api_unavailable = True
+                    error_msg = str(e)
+                    if len(error_msg) > 500:
+                        error_msg = error_msg[:500] + "... (truncated)"
+                    self._logger.warning(
+                        "Responses API failed for multimodal: %s. Falling back to chat.completions (will skip Responses API for subsequent calls).",
+                        error_msg,
+                    )
+
+            if not answer:
+                # Use chat.completions (when Responses API skipped, unavailable, or returned empty)
                 messages: list[dict[str, Any]] = []
                 if self.agent_prompt:
                     messages.append({"role": "system", "content": self.agent_prompt})
