@@ -107,16 +107,21 @@ def wait_for_server(llm_url: str, timeout: int = 120) -> bool:
 
 
 def probe_responses_api(llm_url: str) -> bool:
-    """Return *True* when the server exposes a ``/responses`` endpoint."""
+    """Return *True* when the server exposes and accepts requests to the Responses API."""
+    status: int | None = None
     try:
         r = requests.post(f"{llm_url}/responses", json={}, timeout=5)
-        supported = r.status_code != 404
+        status = r.status_code
+        # Only treat as supported when the server returns 2xx (e.g. 200/201).
+        # 400 Bad Request means the endpoint exists but our format isn't accepted – use chat.completions.
+        supported = 200 <= status < 300
     except Exception:
         supported = False
     logger.info(
-        "Responses API probe: %s (url=%s/responses)",
+        "Responses API probe: %s (url=%s/responses%s)",
         "supported" if supported else "not supported – will use chat.completions for multimodal",
         llm_url,
+        f", status={status}" if status is not None else "",
     )
     return supported
 
