@@ -141,6 +141,16 @@ async def main():
             logger.debug(f"  Registered dependency: {queue_dep_name}")
         logger.info(f"✓ Multiple frame queues available: {list(web.frame_queues.keys())}")
 
+    # Register latest-frame accessor so agents can read the most recent frame
+    # without consuming from (and competing over) the shared FIFO queue.
+    def _get_latest_frame(mode=None):
+        if mode and hasattr(web, 'lastProcessedFrames'):
+            return web.lastProcessedFrames.get(mode)
+        return getattr(web, 'lastProcessedFrame', None)
+
+    registry.register_dependency_resolver("get_latest_frame", lambda: _get_latest_frame)
+    logger.info("✓ Latest-frame accessor registered as dependency")
+
     # Define annotation callback
     def on_annotation(annotation):
         # Format a simple message for the UI
