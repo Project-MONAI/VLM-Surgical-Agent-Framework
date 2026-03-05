@@ -2190,10 +2190,12 @@ function captureAndStoreFrame() {
 
 // Auto frame capture for annotations
 let frameCapture = null;
+let frameCaptureRetry = null;
 const FRAME_CAPTURE_INTERVAL = 10000; // 10 seconds
+const FRAME_CAPTURE_FAST_POLL = 500;  // 500ms retry until first frame captured
 
 function startAutoFrameCapture() {
-  // Clear any existing interval
+  // Clear any existing intervals
   stopAutoFrameCapture();
 
   // Force a capture now to ensure we have a frame, even if the video is paused
@@ -2230,46 +2232,50 @@ function startAutoFrameCapture() {
     }
   }
 
-  // If we now have a frame, store and send it
   if (initialFrame) {
-    // Store the successfully captured frame
-    sessionStorage.setItem('lastCapturedFrame', initialFrame);
-    console.log("Initial frame captured and stored successfully");
-
-    // Update the display
-    updateCapturedFrameDisplay(initialFrame, 'Initial frame captured', 'auto');
-
-    // Send to server for annotation
-    if (typeof sendJSON === 'function') {
-      const payload = createFrameMessagePayload(initialFrame);
-      sendJSON(payload);
-      console.log("Initial frame sent for annotation:", payload);
-    }
+    _onFirstFrameCaptured(initialFrame);
   } else {
-    console.warn("Failed to capture initial frame - ChatBot responses may be limited");
-    showToast("Could not capture video frame - AI responses may be limited", "warning");
+    console.log("Initial capture failed - starting fast poll until first frame is available");
+    frameCaptureRetry = setInterval(() => {
+      const frame = captureVideoFrame();
+      if (frame) {
+        clearInterval(frameCaptureRetry);
+        frameCaptureRetry = null;
+        _onFirstFrameCaptured(frame);
+      }
+    }, FRAME_CAPTURE_FAST_POLL);
   }
 
-  // Start regular interval for frame capture
+  console.log("Auto frame capture started");
+}
+
+function _onFirstFrameCaptured(frameData) {
+  sessionStorage.setItem('lastCapturedFrame', frameData);
+  console.log("Initial frame captured and stored successfully");
+
+  updateCapturedFrameDisplay(frameData, 'Initial frame captured', 'auto');
+
+  if (typeof sendJSON === 'function') {
+    const payload = createFrameMessagePayload(frameData);
+    sendJSON(payload);
+    console.log("Initial frame sent for annotation:", payload);
+  }
+
+  // Now settle into the normal cadence
   frameCapture = setInterval(() => {
-    // Try to capture current frame
-    const frameData = captureVideoFrame();
+    const frame = captureVideoFrame();
 
-    if (frameData) {
-      // Store the frame for future use
-      sessionStorage.setItem('lastCapturedFrame', frameData);
+    if (frame) {
+      sessionStorage.setItem('lastCapturedFrame', frame);
 
-      // Send frame to server with auto_frame flag for annotation
       if (typeof sendJSON === 'function') {
-        const payload = createFrameMessagePayload(frameData);
+        const payload = createFrameMessagePayload(frame);
         sendJSON(payload);
         console.log("Auto-captured frame sent for annotation:", payload);
       }
     } else {
-      // We couldn't capture a frame on this interval
       console.warn("Failed to capture automatic frame");
 
-      // Try to use any previously stored frame for annotation
       const lastFrame = sessionStorage.getItem('lastCapturedFrame');
       if (lastFrame && typeof sendJSON === 'function') {
         updateCapturedFrameDisplay(lastFrame, 'Auto-capture failed - using previous', 'fallback');
@@ -2279,11 +2285,13 @@ function startAutoFrameCapture() {
       }
     }
   }, FRAME_CAPTURE_INTERVAL);
-
-  console.log("Auto frame capture started");
 }
 
 function stopAutoFrameCapture() {
+  if (frameCaptureRetry) {
+    clearInterval(frameCaptureRetry);
+    frameCaptureRetry = null;
+  }
   if (frameCapture) {
     clearInterval(frameCapture);
     frameCapture = null;

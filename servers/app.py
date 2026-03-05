@@ -35,6 +35,7 @@ from utils.response_handler import ResponseHandler
 from utils.agent_registry import AgentRegistry
 from agents.dynamic_selector_agent import DynamicSelectorAgent
 from utils.video_source_registry import VideoSourceRegistry
+from utils.vllm_warmup import vllm_warmup
 
 from servers.web_server import Webserver
 
@@ -94,6 +95,24 @@ async def main():
 
     # Create a directory for uploaded videos if it doesn't exist
     os.makedirs(os.path.join(os.path.dirname(__file__), 'uploaded_videos'), exist_ok=True)
+
+    # ============================================================================
+    # vLLM WARMUP: Wait for server, probe Responses API, warm up the model
+    # ============================================================================
+
+    logger.info("=" * 80)
+    logger.info("Running vLLM server warmup")
+    logger.info("=" * 80)
+
+    warmup_result = vllm_warmup()
+    if not warmup_result.server_ready:
+        logger.error(
+            "vLLM server is not reachable at %s – aborting.",
+            warmup_result.llm_url,
+        )
+        sys.exit(1)
+
+    logger.info("✓ vLLM warmup complete (responses_api=%s)", warmup_result.responses_api_supported)
 
     # ============================================================================
     # AGENT MESSAGE BUS: Standardized Inter-Agent Communication
