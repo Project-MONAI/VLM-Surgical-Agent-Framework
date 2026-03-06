@@ -479,6 +479,7 @@ run_ui() {
         "--net" "host"
         "-e" "VLLM_MODEL_NAME=${VLLM_MODEL_NAME}"
         "-e" "VLLM_URL=${VLLM_URL}"
+        "-e" "RESPONSE_API_USE=${RESPONSE_API_USE}"
     )
 
     # Add plugin directory mounts
@@ -905,6 +906,8 @@ show_help() {
     echo -e "                          Example: GPU_MEMORY_UTILIZATION=0.5 $0 run vllm"
     echo -e "  VLLM_ENFORCE_EAGER      Enable enforce eager mode for vLLM (default: false)"
     echo -e "                          Example: VLLM_ENFORCE_EAGER=true $0 run vllm"
+    echo -e "  RESPONSE_API_USE        Set to 'disable' to force chat.completions for multimodal"
+    echo -e "                          Example: RESPONSE_API_USE=disable $0 run ui"
     echo -e "  CAMERA_INDEX            Set USB camera index (default: 0)"
     echo -e "                          Example: CAMERA_INDEX=1 $0 run webrtc_usbcam"
     echo -e "  CAMERA_FPS              Set camera FPS (default: 30)"

@@ -15,7 +15,6 @@ from abc import ABC, abstractmethod
 import json
 import logging
 import yaml
-import time
 import tiktoken
 import queue
 import threading
@@ -26,6 +25,7 @@ import tempfile
 import os
 import requests
 from openai import OpenAI
+from utils.vllm_warmup import get_cached as _get_warmup_cached
 
 class Agent(ABC):
     """
@@ -45,7 +45,8 @@ class Agent(ABC):
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
         self.client = OpenAI(api_key="EMPTY", base_url=self.llm_url)
 
-        self._wait_for_server()
+        warmup = _get_warmup_cached(self.llm_url, self.model_name)
+        self._responses_api_supported = warmup.responses_api_supported if warmup else False
 
         # Message bus integration
         self.message_bus = message_bus
@@ -178,31 +179,6 @@ class Agent(ABC):
         except Exception:
             name = str(self.model_name).lower()
         return ("qwen" in name) and ("vl" in name)
-
-    def _wait_for_server(self, timeout=120):
-        """Increased timeout to 120 seconds to allow for slower vLLM startup"""
-        attempts = 0
-        check_url = f"{self.llm_url}/models"
-        while attempts < timeout:
-            try:
-                r = requests.get(check_url, timeout=5)
-                if r.status_code == 200:
-                    self._logger.info(f"✅ Successfully connected to vLLM server at {self.llm_url}")
-                    return
-            except Exception as e:
-                if attempts % 10 == 0:  # Log less frequently to reduce clutter
-                    self._logger.info(f"Waiting for vLLM server (attempt {attempts+1}/{timeout}): {e}")
-                else:
-                    self._logger.debug(f"Waiting for vLLM server (attempt {attempts+1}/{timeout}): {e}")
-            time.sleep(1)
-            attempts += 1
-
-        # More helpful error message
-        raise ConnectionError(
-            f"⚠️ Unable to connect to vLLM server at {self.llm_url} after {timeout} seconds.\n"
-            f"Please ensure the vLLM server is running at {self.llm_url}.\n"
-            f"You can start it manually using: ./scripts/run_vllm_server.sh"
-        )
 
     def stream_response(self, prompt, grammar=None, temperature=0.0, display_output=True):
         with Agent._llm_lock:
@@ -343,31 +319,28 @@ class Agent(ABC):
             elif extra_body is not None:
                 req["extra_body"] = extra_body
 
-            self._logger.debug("Multimodal request via Responses API (%s)…", self.model_name)
-            try:
-                result = self.client.responses.create(**req)
-                answer = getattr(result, "output_text", None) or ""
-                if not answer:
-                    # Generic fallback parsing
-                    data = result.model_dump() if hasattr(result, "model_dump") else None
-                    if isinstance(data, dict):
-                        if "output_text" in data:
-                            answer = data["output_text"]
-                        elif isinstance(data.get("output"), list) and data["output"]:
-                            first = data["output"][0]
-                            if isinstance(first, dict) and isinstance(first.get("content"), list) and first["content"]:
-                                c0 = first["content"][0]
-                                if isinstance(c0, dict):
-                                    answer = c0.get("text", "")
-            except Exception as e:
-                # Fallback to chat.completions (older path)
-                # Sanitize error message to avoid logging massive base64 images
-                error_msg = str(e)
-                if len(error_msg) > 500:
-                    error_msg = error_msg[:500] + "... (truncated)"
-                self._logger.warning(
-                    f"Responses API failed for multimodal: {error_msg}. Falling back to chat.completions."
-                )
+            if self._responses_api_supported:
+                self._logger.debug("Multimodal request via Responses API (%s)…", self.model_name)
+                try:
+                    result = self.client.responses.create(**req)
+                    answer = getattr(result, "output_text", None) or ""
+                    if not answer:
+                        data = result.model_dump() if hasattr(result, "model_dump") else None
+                        if isinstance(data, dict):
+                            if "output_text" in data:
+                                answer = data["output_text"]
+                            elif isinstance(data.get("output"), list) and data["output"]:
+                                first = data["output"][0]
+                                if isinstance(first, dict) and isinstance(first.get("content"), list) and first["content"]:
+                                    c0 = first["content"][0]
+                                    if isinstance(c0, dict):
+                                        answer = c0.get("text", "")
+                except Exception as e:
+                    error_msg = str(e)
+                    if len(error_msg) > 500:
+                        error_msg = error_msg[:500] + "... (truncated)"
+                    self._logger.error("Responses API multimodal request failed: %s", error_msg)
+            if not answer:
                 messages: list[dict[str, Any]] = []
                 if self.agent_prompt:
                     messages.append({"role": "system", "content": self.agent_prompt})
@@ -425,14 +398,14 @@ class Agent(ABC):
                         except requests.exceptions.Timeout:
                             self._logger.error("vLLM request timed out (fallback without schema)")
                             raise TimeoutError("Model request timed out") from None
-                        except Exception:
-                            self._logger.exception("vLLM multimodal request failed (fallback without schema)")
+                        except Exception as e4:
+                            self._logger.error("vLLM multimodal request failed (fallback without schema): %s", str(e4)[:500])
                             return ""
                     else:
                         if isinstance(e3, requests.exceptions.Timeout):
                             self._logger.error("vLLM request timed out (fallback)")
                             raise TimeoutError("Model request timed out") from None
-                        self._logger.exception("vLLM multimodal request failed (fallback)")
+                        self._logger.error("vLLM multimodal request failed (fallback): %s", msg2[:500])
                         return ""
 
         if display_output and self.response_handler:
