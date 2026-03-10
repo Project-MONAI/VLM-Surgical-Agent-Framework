@@ -25,6 +25,9 @@ REPO_PATH=$(dirname $(pwd))
 # Ensure ~/.local/bin is in PATH (for hf and other user-installed tools)
 export PATH="$HOME/.local/bin:$PATH"
 
+# Docker build options (e.g. "--no-cache")
+DOCKER_BUILD_OPTS=${DOCKER_BUILD_OPTS:-}
+
 # Detect architecture
 ARCH=$(uname -m)
 echo -e "${BLUE}🔍 Detected architecture: $ARCH${NC}"
@@ -213,7 +216,7 @@ build_vllm() {
 
         cd vllm
         echo -e "${YELLOW}🔨 Building vLLM Docker image...${NC}"
-        DOCKER_BUILDKIT=1 docker build . \
+        DOCKER_BUILDKIT=1 docker build ${DOCKER_BUILD_OPTS} . \
             --file docker/Dockerfile \
             --target vllm-openai \
             -t $VLLM_IMAGE \
@@ -226,7 +229,7 @@ build_vllm() {
 # Function to build Whisper
 build_whisper() {
     echo -e "\n${BLUE}🔨 Building Whisper Server...${NC}"
-    docker build \
+    docker build ${DOCKER_BUILD_OPTS} \
         -t vlm-surgical-agents:whisper-dgpu \
         -f "$REPO_PATH/docker/Dockerfile.whisper" "$REPO_PATH"
     echo -e "${GREEN}✅ Whisper build completed${NC}"
@@ -235,7 +238,7 @@ build_whisper() {
 # Function to build UI
 build_ui() {
     echo -e "\n${BLUE}🔨 Building UI Server...${NC}"
-    docker build -t vlm-surgical-agents:ui -f "$REPO_PATH/docker/Dockerfile.ui" "$REPO_PATH"
+    docker build ${DOCKER_BUILD_OPTS} -t vlm-surgical-agents:ui -f "$REPO_PATH/docker/Dockerfile.ui" "$REPO_PATH"
     echo -e "${GREEN}✅ UI build completed${NC}"
 }
 
@@ -261,14 +264,14 @@ ensure_tts_directories() {
 build_tts() {
     echo -e "\n${BLUE}🔨 Building TTS Server...${NC}"
     ensure_tts_directories
-    docker build -t vlm-surgical-agents:tts -f "$REPO_PATH/tts-service/Dockerfile" "$REPO_PATH/tts-service"
+    docker build ${DOCKER_BUILD_OPTS} -t vlm-surgical-agents:tts -f "$REPO_PATH/tts-service/Dockerfile" "$REPO_PATH/tts-service"
     echo -e "${GREEN}✅ TTS build completed${NC}"
 }
 
 # Function to build WebRTC USB Camera
 build_webrtc_usbcam() {
     echo -e "\n${BLUE}🔨 Building WebRTC USB Camera Server...${NC}"
-    docker build -t vlm-surgical-agents:webrtc-usbcam -f "$REPO_PATH/docker/Dockerfile.webrtc_usbcam" "$REPO_PATH"
+    docker build ${DOCKER_BUILD_OPTS} -t vlm-surgical-agents:webrtc-usbcam -f "$REPO_PATH/docker/Dockerfile.webrtc_usbcam" "$REPO_PATH"
     echo -e "${GREEN}✅ WebRTC USB Camera build completed${NC}"
 }
 
@@ -918,6 +921,8 @@ show_help() {
     echo -e "                          Example: CAMERA_HEIGHT=720 $0 run webrtc_usbcam"
     echo -e "  WEBRTC_PORT             Set WebRTC server port (default: 8080)"
     echo -e "                          Example: WEBRTC_PORT=9090 $0 run webrtc_usbcam"
+    echo -e "  DOCKER_BUILD_OPTS       Extra options passed to 'docker build' (default: empty)"
+    echo -e "                          Example: DOCKER_BUILD_OPTS=\"--no-cache\" $0 build"
 }
 
 # Parse command line arguments
