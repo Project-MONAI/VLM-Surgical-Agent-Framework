@@ -2022,6 +2022,12 @@ function onChatHistoryReset() {
   while (chatHistoryContainer.childNodes.length > 1) {
     chatHistoryContainer.removeChild(chatHistoryContainer.lastChild);
   }
+
+  // Tell the backend to clear its chat history as well
+  if (typeof sendJSON === 'function') {
+    sendJSON({ clear_history: true });
+    console.log("Sent clear_history to backend");
+  }
 }
 
 // Functions for mic control
