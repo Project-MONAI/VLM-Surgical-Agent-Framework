@@ -399,6 +399,12 @@ async def main():
         """
         Called when the user manually types input or when the webserver passes along an ASR transcript.
         """
+        if 'clear_history' in payload:
+            chat_history.reset()
+            message_bus.clear_history()
+            logging.info("Chat history and message bus history cleared by user")
+            return
+
         # Special case for summary generation request
         if 'summary_request' in payload and 'user_input' in payload:
             user_text = payload['user_input']

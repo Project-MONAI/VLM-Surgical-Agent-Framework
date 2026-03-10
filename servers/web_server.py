@@ -435,7 +435,10 @@ class Webserver(threading.Thread):
                             self._logger.debug("Got frame_data from client (legacy mode).")
                             self.frame_queue.put(frame_data)
                             self.lastProcessedFrame = frame_data
-                        if 'user_input' in data and self.msg_callback:
+                        if 'clear_history' in data and self.msg_callback:
+                            self._logger.info("Received clear_history request from client")
+                            self.msg_callback(data, 0, int(time.time() * 1000))
+                        elif 'user_input' in data and self.msg_callback:
                             try:
                                 preview = data.get('user_input')
                                 self._logger.debug(
