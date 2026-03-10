@@ -397,7 +397,9 @@ async def main():
 
     def msg_callback(payload, msg_type, timestamp):
         """
-        Called when the user manually types input or when the webserver passes along an ASR transcript.
+        Called when the user manually types input or when the webserver passes along an ASR transcript,
+        and when special control actions (e.g., clear_history requests) are received to manage chat and
+        message history.
         """
         if 'clear_history' in payload:
             chat_history.reset()
