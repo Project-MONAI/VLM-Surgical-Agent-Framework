@@ -923,6 +923,8 @@ show_help() {
     echo -e "                          Example: WEBRTC_PORT=9090 $0 run webrtc_usbcam"
     echo -e "  DOCKER_BUILD_OPTS       Extra options passed to 'docker build' (default: empty)"
     echo -e "                          Example: DOCKER_BUILD_OPTS=\"--no-cache\" $0 build"
+    echo -e "                          Note: options containing spaces must be escaped or avoided,"
+    echo -e "                                as DOCKER_BUILD_OPTS is word-split when expanded."
 }
 
 # Parse command line arguments
