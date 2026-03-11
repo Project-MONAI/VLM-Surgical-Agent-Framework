@@ -118,8 +118,9 @@ class Webserver(threading.Thread):
         self.app.add_url_rule('/api/video_sources', view_func=self.video_sources_route, methods=['GET'])
         self.app.add_url_rule('/videos/<path:filename>', view_func=self.serve_video, methods=['GET'])
 
-        # For text messages from WebSocket - make sure we listen on all interfaces
-        self.ws_queue = queue.Queue()
+        # Track connected WebSocket clients for broadcast-style message delivery
+        self._ws_clients = set()
+        self._ws_clients_lock = threading.Lock()
         # Configure WebSocket with longer ping timeout and interval for more reliability
         self.ws_server = websocket_serve(
             self.on_websocket,
@@ -324,26 +325,17 @@ class Webserver(threading.Thread):
         })
 
     def on_websocket(self, websocket):
-        listener_thread = threading.Thread(target=self.websocket_listener, args=[websocket], daemon=True)
-        listener_thread.start()
-        # Send queued messages
+        with self._ws_clients_lock:
+            self._ws_clients.add(websocket)
+        client_count = len(self._ws_clients)
+        self._logger.info(f"WebSocket client connected (total: {client_count})")
         try:
-            while True:
-                msg = self.ws_queue.get()
-                self._logger.debug(f"Sending message to client: {msg}")
-                try:
-                    websocket.send(msg)
-                except websockets.exceptions.ConnectionClosedOK:
-                    self._logger.info("WebSocket connection closed by client")
-                    break
-                except websockets.exceptions.ConnectionClosedError as e:
-                    self._logger.error(f"WebSocket connection error: {e}")
-                    break
-                except Exception as e:
-                    self._logger.error(f"WebSocket send error: {e}", exc_info=True)
-                    # Don't break here, try to continue sending other messages
-        except Exception as e:
-            self._logger.error(f"WebSocket message queue processing error: {e}", exc_info=True)
+            self.websocket_listener(websocket)
+        finally:
+            with self._ws_clients_lock:
+                self._ws_clients.discard(websocket)
+            client_count = len(self._ws_clients)
+            self._logger.info(f"WebSocket client disconnected (total: {client_count})")
 
     def websocket_listener(self, websocket):
         # Track if this WebSocket has sent its first frame to increment session_id once
@@ -689,10 +681,30 @@ class Webserver(threading.Thread):
         try:
             if not isinstance(payload, str):
                 payload = json.dumps(payload)
-            self._logger.debug(f"Queueing message for client: {payload}")
-            self.ws_queue.put(payload)
+            with self._ws_clients_lock:
+                clients = list(self._ws_clients)
+            if not clients:
+                self._logger.warning(f"No WebSocket clients connected, message dropped: {payload[:120]}...")
+                return
+            self._logger.debug(f"Broadcasting message to {len(clients)} client(s): {payload}")
+            dead = []
+            for ws in clients:
+                try:
+                    ws.send(payload)
+                except websockets.exceptions.ConnectionClosedOK:
+                    dead.append(ws)
+                except websockets.exceptions.ConnectionClosedError:
+                    dead.append(ws)
+                except Exception as e:
+                    self._logger.error(f"Error sending to WebSocket client: {e}")
+                    dead.append(ws)
+            if dead:
+                with self._ws_clients_lock:
+                    for ws in dead:
+                        self._ws_clients.discard(ws)
+                self._logger.debug(f"Removed {len(dead)} dead client(s)")
         except Exception as e:
-            self._logger.error(f"Error queueing message for client: {e}", exc_info=True)
+            self._logger.error(f"Error broadcasting message to clients: {e}", exc_info=True)
 
     def generate_post_op_note_route(self):
         """Generate a post-op note summary using annotations and notes"""
