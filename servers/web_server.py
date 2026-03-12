@@ -429,7 +429,7 @@ class Webserver(threading.Thread):
                             self.lastProcessedFrame = frame_data
                         if 'clear_history' in data and self.msg_callback:
                             self._logger.info("Received clear_history request from client")
-                            self.msg_callback(data, 0, int(time.time() * 1000))
+                            self.msg_callback(data, 0, int(time.time() * 1000), reply_to=websocket)
                         elif 'user_input' in data and self.msg_callback:
                             try:
                                 preview = data.get('user_input')
@@ -440,7 +440,7 @@ class Webserver(threading.Thread):
                                 )
                             except Exception:
                                 self._logger.debug("Sending user_input to msg_callback (preview unavailable)")
-                            self.msg_callback(data, 0, int(time.time() * 1000))
+                            self.msg_callback(data, 0, int(time.time() * 1000), reply_to=websocket)
                     except json.JSONDecodeError:
                         self._logger.warning("Invalid JSON from client.")
                         continue
@@ -457,7 +457,6 @@ class Webserver(threading.Thread):
                     break
                 except TimeoutError as e:
                     self._logger.warning(f"WebSocket timeout error: {e}")
-                    # Attempt to gracefully close the connection
                     try:
                         websocket.close()
                     except:
@@ -705,6 +704,29 @@ class Webserver(threading.Thread):
                 self._logger.debug(f"Removed {len(dead)} dead client(s)")
         except Exception as e:
             self._logger.error(f"Error broadcasting message to clients: {e}", exc_info=True)
+
+    def send_message_to(self, payload, target_websocket):
+        """Send a message only to the given WebSocket client (e.g. reply to the client that asked)."""
+        try:
+            if not isinstance(payload, str):
+                payload = json.dumps(payload)
+            with self._ws_clients_lock:
+                if target_websocket not in self._ws_clients:
+                    self._logger.debug("Target WebSocket no longer connected, message dropped")
+                    return
+            try:
+                target_websocket.send(payload)
+                self._logger.debug(f"Sent message to single client: {payload[:80]}...")
+            except websockets.exceptions.ConnectionClosedOK:
+                with self._ws_clients_lock:
+                    self._ws_clients.discard(target_websocket)
+            except websockets.exceptions.ConnectionClosedError:
+                with self._ws_clients_lock:
+                    self._ws_clients.discard(target_websocket)
+            except Exception as e:
+                self._logger.error(f"Error sending message to client: {e}")
+        except Exception as e:
+            self._logger.error(f"Error sending message to client: {e}", exc_info=True)
 
     def generate_post_op_note_route(self):
         """Generate a post-op note summary using annotations and notes"""

@@ -395,12 +395,18 @@ async def main():
     # MESSAGE CALLBACK: Handle user input and route to agents
     # ============================================================================
 
-    def msg_callback(payload, msg_type, timestamp):
+    def msg_callback(payload, msg_type, timestamp, reply_to=None):
         """
         Called when the user manually types input or when the webserver passes along an ASR transcript,
         and when special control actions (e.g., clear_history requests) are received to manage chat and
         message history.
+        reply_to: if set, the WebSocket connection that sent this message; responses are sent only to this client.
         """
+        def send_reply(p):
+            if reply_to is not None and hasattr(web, 'send_message_to'):
+                web.send_message_to(p, reply_to)
+            else:
+                web.send_message(p)
         if 'clear_history' in payload:
             chat_history.reset()
             message_bus.clear_history()
@@ -457,7 +463,7 @@ IMPORTANT: This is a TEXT-ONLY SUMMARY request. Do not attempt to identify instr
                 chat_history.add_bot_message(response_data["response"])
 
                 # Send result to UI with special flag for summary
-                web.send_message({
+                send_reply({
                     "agent_response": response_data["response"],
                     "agent_name": response_data.get("name", "AI Assistant"),
                     "summary_response": True
@@ -585,7 +591,7 @@ IMPORTANT: This is a TEXT-ONLY SUMMARY request. Do not attempt to identify instr
                             }
                             # Also send the structured note to the UI Summary tab via WebSocket
                             try:
-                                web.send_message({
+                                send_reply({
                                     "post_op_note": final_json,
                                     "summary_response": True
                                 })
@@ -617,7 +623,7 @@ IMPORTANT: This is a TEXT-ONLY SUMMARY request. Do not attempt to identify instr
                 # Check if this is from the NotetakerAgent to tag it for the UI
                 if selected_agent_name == "NotetakerAgent":
                     # Pass along the original user input so the UI can infer note content/title
-                    web.send_message({
+                    send_reply({
                         "agent_response": response_data["response"],
                         "agent_name": response_data.get("name", "AI Assistant"),
                         "is_note": True,
@@ -626,7 +632,7 @@ IMPORTANT: This is a TEXT-ONLY SUMMARY request. Do not attempt to identify instr
                     })
                 else:
                     # Send result to UI
-                    web.send_message({
+                    send_reply({
                         "agent_response": response_data["response"],
                         "agent_name": response_data.get("name", "AI Assistant"),
                     })
