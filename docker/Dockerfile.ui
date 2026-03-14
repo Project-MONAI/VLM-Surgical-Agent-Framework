@@ -21,6 +21,11 @@ RUN pip install --no-cache-dir tiktoken \
     openai \
     sentence-transformers
 
+# Pre-download tiktoken encoding data so it works offline
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken_cache
+RUN mkdir -p $TIKTOKEN_CACHE_DIR && \
+    python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+
 # npm deps — invalidated only when package.json / package-lock.json change
 COPY package.json package-lock.json ./
 RUN npm install
